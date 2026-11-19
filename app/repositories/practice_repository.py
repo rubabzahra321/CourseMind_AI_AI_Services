@@ -1,4 +1,5 @@
 from app.db.client import get_db
+from app.db.helpers import data_of
 
 
 def create_session(
@@ -40,7 +41,7 @@ def get_session(session_id, user_id, course_id):
         .execute()
     )
 
-    return result.data
+    return data_of(result)
 
 
 def get_question(question_id, user_id, course_id):
@@ -57,7 +58,7 @@ def get_question(question_id, user_id, course_id):
         .execute()
     )
 
-    return result.data
+    return data_of(result)
 
 
 def get_option(option_id, question_id):
@@ -72,7 +73,23 @@ def get_option(option_id, question_id):
         .execute()
     )
 
-    return result.data
+    return data_of(result)
+
+
+def get_correct_option(question_id):
+
+    result = (
+        get_db()
+        .table("question_options")
+        .select("id, option_text")
+        .eq("question_id", question_id)
+        .eq("is_correct", True)
+        .limit(1)
+        .execute()
+    )
+
+    rows = result.data or []
+    return rows[0] if rows else None
 
 
 def has_attempt(session_id, question_id):
@@ -87,7 +104,7 @@ def has_attempt(session_id, question_id):
         .execute()
     )
 
-    return result.data is not None
+    return data_of(result) is not None
 
 
 def save_attempt(

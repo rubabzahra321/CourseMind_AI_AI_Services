@@ -3,6 +3,7 @@ from uuid import UUID
 from datetime import datetime, timezone
 
 from app.db.client import get_db
+from app.db.helpers import data_of
 
 
 def get_topic_stats(user_id: UUID, course_id: UUID):
@@ -61,7 +62,7 @@ def get_owned_topic(user_id: UUID, course_id: UUID, topic_id: UUID):
         .maybe_single()
         .execute()
     )
-    return result.data
+    return data_of(result)
 
 
 def get_course(user_id: UUID, course_id: UUID):
@@ -73,7 +74,7 @@ def get_course(user_id: UUID, course_id: UUID):
         .maybe_single()
         .execute()
     )
-    return result.data
+    return data_of(result)
 
 
 def archive_active_plans(user_id: UUID, course_id: UUID):
@@ -124,7 +125,7 @@ def list_active_plan(user_id: UUID, course_id: UUID):
         .maybe_single()
         .execute()
     )
-    return result.data
+    return data_of(result)
 
 
 def list_plan_items(user_id: UUID, course_id: UUID, plan_id: UUID):
@@ -153,4 +154,4 @@ def mark_plan_item_done(user_id, course_id, item_id):
         .eq("course_id", str(course_id))
         .execute()
     )
-    return result.data
+    return data_of(result)

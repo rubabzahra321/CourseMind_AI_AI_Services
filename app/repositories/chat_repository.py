@@ -1,4 +1,5 @@
 from app.db.client import get_db
+from app.db.helpers import data_of
 
 
 def get_session(session_id, user_id, course_id):
@@ -14,7 +15,7 @@ def get_session(session_id, user_id, course_id):
         .execute()
     )
 
-    return result.data
+    return data_of(result)
 
 
 def create_session(user_id, course_id, question):

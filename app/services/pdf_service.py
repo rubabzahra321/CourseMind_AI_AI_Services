@@ -1,4 +1,7 @@
-import fitz  # PyMuPDF
+try:  # PyMuPDF >= 1.24.3 exposes `pymupdf`; `fitz` is deprecated in newer releases
+    import pymupdf as fitz
+except ImportError:  # pragma: no cover
+    import fitz  # type: ignore
 from app.core.errors import PermanentJobError
 
 

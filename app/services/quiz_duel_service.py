@@ -2,6 +2,7 @@
 from uuid import UUID
 
 from app.db.client import get_db
+from app.db.helpers import data_of
 from app.search.algorithms import minimax
 
 
@@ -81,7 +82,7 @@ def _get_game(user_id, course_id, game_id):
         .execute()
     )
 
-    return result.data
+    return data_of(result)
 
 
 def _winner(board):
@@ -181,7 +182,7 @@ def submit_game_answer(
     if board[position] != "":
         raise ValueError("That square is already occupied.")
 
-    question = (
+    question = data_of(
         db.table("generated_questions")
         .select("id,explanation")
         .eq("id", str(question_id))
@@ -189,20 +190,18 @@ def submit_game_answer(
         .eq("course_id", str(course_id))
         .maybe_single()
         .execute()
-        .data
     )
 
     if not question:
         raise ValueError("Question not found.")
 
-    option = (
+    option = data_of(
         db.table("question_options")
         .select("id,is_correct,option_text")
         .eq("id", str(selected_option_id))
         .eq("question_id", str(question_id))
         .maybe_single()
         .execute()
-        .data
     )
 
     if not option:
@@ -212,18 +211,21 @@ def submit_game_answer(
 
     is_correct = bool(option["is_correct"])
 
-    # Record every answered question so it cannot repeat.
-    moves = [{
-        "game_id": str(game_id),
-        "user_id": str(user_id),
-        "position": position,
-        "player": "student",
-        "question_id": str(question_id),
-        "is_correct": is_correct,
-    }]
+    # Only a CORRECT answer occupies a square. (quiz_duel_moves is UNIQUE(game_id, position),
+    # so storing a failed attempt on that square would make the AI's move crash.)
+    # A failed question still cannot repeat: the AI move row below carries its question_id.
+    moves = []
 
     if is_correct:
         board[position] = "X"
+        moves.append({
+            "game_id": str(game_id),
+            "user_id": str(user_id),
+            "position": position,
+            "player": "student",
+            "question_id": str(question_id),
+            "is_correct": True,
+        })
 
     result = _winner(board)
 
@@ -247,7 +249,8 @@ def submit_game_answer(
         result = _winner(board)
 
     # Store student and AI moves.
-    db.table("quiz_duel_moves").insert(moves).execute()
+    if moves:
+        db.table("quiz_duel_moves").insert(moves).execute()
 
     status = "completed" if result else "in_progress"
 

@@ -1,5 +1,6 @@
 
 from app.core.config import settings
+from app.db.helpers import data_of
 
 from app.ai.question_generator import generate_mcqs
 
@@ -211,7 +212,7 @@ def submit_answer(
         .execute()
     )
 
-    if not assigned.data:
+    if not data_of(assigned):
         raise ValueError("Question does not belong to this session")
 
     if practice_repository.has_attempt(session_id, question_id):
@@ -235,6 +236,9 @@ def submit_answer(
         raise ValueError("Selected option does not belong to this question")
 
     is_correct = bool(option["is_correct"])
+
+    # Show the student the REAL answer, even when they picked a wrong option.
+    correct_option = option if is_correct else practice_repository.get_correct_option(question_id)
 
     attempt = practice_repository.save_attempt(
         session_id=session_id,
@@ -293,10 +297,10 @@ def submit_answer(
     return {
         "attempt_id": attempt["id"],
         "is_correct": is_correct,
-        "correct_option": {
-            "id": option["id"],
-            "option_text": option["option_text"],
-        },
+        "correct_option": (
+            {"id": correct_option["id"], "option_text": correct_option["option_text"]}
+            if correct_option else None
+        ),
         "explanation": question["explanation"],
         "progress": {
             "answered": total_answered,

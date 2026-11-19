@@ -1,4 +1,5 @@
 from app.db.client import get_db
+from app.db.helpers import data_of
 
 
 def get_topic(user_id, course_id, topic_id):
@@ -14,7 +15,7 @@ def get_topic(user_id, course_id, topic_id):
         .execute()
     )
 
-    return result.data
+    return data_of(result)
 
 
 def get_document(user_id, course_id, document_id):
@@ -31,7 +32,7 @@ def get_document(user_id, course_id, document_id):
         .execute()
     )
 
-    return result.data
+    return data_of(result)
 
 
 def get_document_chunks(user_id, course_id, document_id, limit=40):
