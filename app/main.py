@@ -9,6 +9,7 @@ from app.api import (
     quiz_duel,
     practice,
     analytics,
+    phase4,
 )
 
 
@@ -25,6 +26,6 @@ app.include_router(chat.router)
 app.include_router(practice.router)
 app.include_router(agents.router)
 app.include_router(quiz_duel.router)
-
-# Phase 3: Paper Analytics and Preparation Gaps
 app.include_router(analytics.router)
+
+app.include_router(phase4.router)

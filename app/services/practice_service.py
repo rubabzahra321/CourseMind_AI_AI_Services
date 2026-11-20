@@ -10,6 +10,10 @@ from app.repositories import (
 )
 
 
+# ==========================================
+# Generate Questions
+# ==========================================
+
 def generate_questions(
     user_id,
     course_id,
@@ -59,9 +63,20 @@ def generate_questions(
         material=material,
     )
 
+    # Calculate the available source page range.
+    page_numbers = [
+        chunk["page_start"]
+        for chunk in chunks
+        if chunk.get("page_start") is not None
+    ]
+
+    source_page_start = min(page_numbers) if page_numbers else None
+    source_page_end = max(page_numbers) if page_numbers else None
+
     saved_ids = []
 
     for question in generated:
+
         question_id = question_repository.save_generated_question(
             user_id=user_id,
             course_id=course_id,
@@ -70,6 +85,8 @@ def generate_questions(
             question=question,
             difficulty=difficulty,
             model_name=settings.gemini_chat_model,
+            source_page_start=source_page_start,
+            source_page_end=source_page_end,
         )
 
         saved_ids.append(question_id)
@@ -81,6 +98,10 @@ def generate_questions(
         "question_ids": saved_ids,
     }
 
+
+# ==========================================
+# Get Questions
+# ==========================================
 
 def get_questions(
     user_id,
@@ -95,6 +116,10 @@ def get_questions(
         limit,
     )
 
+
+# ==========================================
+# Start Practice
+# ==========================================
 
 def start_practice(
     user_id,
@@ -115,6 +140,7 @@ def start_practice(
     db_questions = []
 
     for question_id in question_ids:
+
         question = practice_repository.get_question(
             question_id,
             user_id,
@@ -155,6 +181,7 @@ def start_practice(
     result_questions = []
 
     for question in db_questions:
+
         options = (
             get_db()
             .table("question_options")
@@ -167,7 +194,12 @@ def start_practice(
         result_questions.append({
             "id": question["id"],
             "question_text": question["question_text"],
+            "question_type": question.get("question_type", "mcq"),
             "difficulty": question["difficulty"],
+            "max_marks": question.get("max_marks", 1),
+            "source_document_id": question.get("source_document_id"),
+            "source_page_start": question.get("source_page_start"),
+            "source_page_end": question.get("source_page_end"),
             "options": options.data or [],
         })
 
@@ -177,6 +209,10 @@ def start_practice(
         "questions": result_questions,
     }
 
+
+# ==========================================
+# Submit MCQ Answer
+# ==========================================
 
 def submit_answer(
     user_id,
@@ -238,7 +274,10 @@ def submit_answer(
     is_correct = bool(option["is_correct"])
 
     # Show the student the REAL answer, even when they picked a wrong option.
-    correct_option = option if is_correct else practice_repository.get_correct_option(question_id)
+    correct_option = (
+        option if is_correct
+        else practice_repository.get_correct_option(question_id)
+    )
 
     attempt = practice_repository.save_attempt(
         session_id=session_id,
@@ -250,18 +289,11 @@ def submit_answer(
     )
 
     # Refresh progress immediately after saving the attempt.
-    if question["topic_id"]:
-        practice_repository.refresh_topic_progress(
-            user_id,
-            course_id,
-            question["topic_id"],
-        )
-    else:
-        practice_repository.refresh_topic_progress(
-            user_id,
-            course_id,
-            None,
-        )
+    practice_repository.refresh_topic_progress(
+        user_id,
+        course_id,
+        question["topic_id"],
+    )
 
     # Recalculate session totals from persisted attempts.
     attempts = practice_repository.get_session_attempts(
@@ -275,10 +307,10 @@ def submit_answer(
         1 for item in attempts if item["is_correct"]
     )
 
-    accuracy = round(
-        (correct_count / total_answered) * 100,
-        2
-    ) if total_answered else 0
+    accuracy = (
+        round((correct_count / total_answered) * 100, 2)
+        if total_answered else 0
+    )
 
     completed = total_answered >= session["total_questions"]
 
@@ -298,7 +330,10 @@ def submit_answer(
         "attempt_id": attempt["id"],
         "is_correct": is_correct,
         "correct_option": (
-            {"id": correct_option["id"], "option_text": correct_option["option_text"]}
+            {
+                "id": correct_option["id"],
+                "option_text": correct_option["option_text"]
+            }
             if correct_option else None
         ),
         "explanation": question["explanation"],

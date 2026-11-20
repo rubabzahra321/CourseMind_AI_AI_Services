@@ -1,9 +1,7 @@
+
 from app.core.config import settings
 
-from app.ai.gemini import (
-    embed_query,
-    generate_answer,
-)
+from app.ai.gemini import embed_query, generate_answer
 
 from app.repositories import (
     rag_repository,
@@ -18,12 +16,48 @@ INSUFFICIENT_ANSWER = (
 )
 
 
-def _build_prompt(question, history, sources):
+DEPTH_INSTRUCTIONS = {
+    "short": (
+        "Give a short and direct answer. Use only the most important "
+        "points. Avoid unnecessary detail."
+    ),
+    "detailed": (
+        "Give a detailed explanation. Explain the important concepts, "
+        "include relevant details from the sources, and use examples "
+        "only when the sources support them."
+    ),
+    "step_by_step": (
+        "Explain the answer step by step. Use numbered steps where "
+        "helpful. Explain each step in simple student-friendly language."
+    ),
+}
 
+
+def _evidence_strength(sources):
+    if not sources:
+        return "insufficient"
+
+    similarities = [
+        float(source.get("similarity") or 0)
+        for source in sources
+    ]
+
+    strongest = max(similarities, default=0)
+    average = sum(similarities) / len(similarities)
+
+    if (
+        strongest >= settings.evidence_strong_similarity
+        and average >= settings.evidence_partial_similarity
+    ):
+        return "strong"
+
+    return "partial"
+
+
+def _build_prompt(question, history, sources, depth_mode):
     source_context = []
 
     for index, source in enumerate(sources, start=1):
-
         source_context.append(
             f"""
 SOURCE [{index}]
@@ -42,6 +76,8 @@ Content:
         for item in history
     )
 
+    depth_instruction = DEPTH_INSTRUCTIONS[depth_mode]
+
     return f"""
 You are CourseMind AI, a university study assistant.
 
@@ -50,14 +86,16 @@ course-material sources.
 
 Rules:
 1. Do not use outside knowledge as factual evidence.
-2. If the sources do not contain the answer, clearly say so.
-3. Do not invent facts, page numbers or document names.
-4. Cite factual claims using source labels such as [1] or [2].
-5. Use clear, student-friendly language.
-6. If explaining a technical concept, structure the answer
-   into understandable steps when useful.
-7. Previous conversation is context only, not evidence.
-8. Never claim a source supports something it does not contain.
+2. Do not invent facts, page numbers or document names.
+3. Cite factual claims using source labels such as [1] or [2].
+4. Use clear, student-friendly language.
+5. Previous conversation is context only, not evidence.
+6. Never claim a source supports something it does not contain.
+7. If the sources only partly answer the question, clearly explain
+   which part is supported and which part is not supported.
+
+Answer depth:
+{depth_instruction}
 
 Previous conversation:
 {conversation}
@@ -77,48 +115,46 @@ def answer_question(
     course_id: str,
     question: str,
     session_id=None,
+    depth_mode="detailed",
 ):
+    if depth_mode not in DEPTH_INSTRUCTIONS:
+        raise ValueError("Invalid answer depth mode")
 
-    # 1. Create or validate chat session.
+    # 1. Create or validate the chat session.
     if session_id:
-
         session = chat_repository.get_session(
             session_id,
             user_id,
-            course_id
+            course_id,
         )
-
         if not session:
             raise ValueError("Chat session not found")
-
     else:
-
         session = chat_repository.create_session(
             user_id,
             course_id,
-            question
+            question,
         )
-
         session_id = session["id"]
 
-    # 2. Get previous conversation before saving this question.
+    # 2. Load conversation context before saving this question.
     history = chat_repository.get_recent_messages(
         session_id,
-        user_id
+        user_id,
     )
 
-    # 3. Save the user's question.
+    # 3. Save the student's question.
     chat_repository.save_message(
         session_id,
         user_id,
         "user",
-        question
+        question,
+        depth_mode=depth_mode,
     )
 
-    # 4. Convert question into an embedding.
+    # 4. Retrieve relevant course passages.
     query_vector = embed_query(question)
 
-    # 5. Retrieve relevant passages.
     matches = rag_repository.search_chunks(
         user_id=user_id,
         course_id=course_id,
@@ -127,9 +163,8 @@ def answer_question(
         min_similarity=settings.rag_min_similarity,
     )
 
-    # 6. No evidence: do not ask Gemini to guess.
+    # 5. No matching material means no generated factual answer.
     if not matches:
-
         answer = INSUFFICIENT_ANSWER
 
         message = chat_repository.save_message(
@@ -139,36 +174,41 @@ def answer_question(
             answer,
             insufficient_evidence=True,
             model_name=settings.gemini_chat_model,
+            depth_mode=depth_mode,
+            evidence_strength="insufficient",
         )
 
         return {
             "session_id": session_id,
             "answer": answer,
             "insufficient_evidence": True,
+            "evidence_strength": "insufficient",
+            "depth_mode": depth_mode,
             "sources": [],
             "message_id": message["id"],
         }
 
-    # 7. Prepare source references.
+    # 6. Number the retrieved source passages.
     sources = []
-
     for index, item in enumerate(matches, start=1):
-
         sources.append({
             **item,
             "rank": index,
         })
 
-    # 8. Generate grounded answer.
+    strength = _evidence_strength(sources)
+
+    # 7. Generate a grounded answer.
     prompt = _build_prompt(
         question,
         history,
-        sources
+        sources,
+        depth_mode,
     )
 
     answer = generate_answer(prompt)
 
-    # 9. Save assistant response.
+    # 8. Save the assistant response and its evidence label.
     message = chat_repository.save_message(
         session_id,
         user_id,
@@ -176,20 +216,23 @@ def answer_question(
         answer,
         insufficient_evidence=False,
         model_name=settings.gemini_chat_model,
+        depth_mode=depth_mode,
+        evidence_strength=strength,
     )
 
-    # 10. Save source references.
+    # 9. Save source links for the answer.
     chat_repository.save_sources(
         message["id"],
         user_id,
-        sources
+        sources,
     )
 
-    # 11. Return answer and source information.
     return {
         "session_id": session_id,
         "answer": answer,
         "insufficient_evidence": False,
+        "evidence_strength": strength,
+        "depth_mode": depth_mode,
         "message_id": message["id"],
         "sources": [
             {
