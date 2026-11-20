@@ -1,5 +1,7 @@
+from datetime import datetime, timezone
 
 from app.core.config import settings
+from app.db.client import get_db
 from app.db.helpers import data_of
 
 from app.ai.question_generator import generate_mcqs
@@ -9,10 +11,6 @@ from app.repositories import (
     practice_repository,
 )
 
-
-# ==========================================
-# Generate Questions
-# ==========================================
 
 def generate_questions(
     user_id,
@@ -56,14 +54,7 @@ def generate_questions(
 
     material = material[:settings.mcq_context_max_chars]
 
-    generated = generate_mcqs(
-        topic_title=topic["title"],
-        difficulty=difficulty,
-        number_of_questions=number_of_questions,
-        material=material,
-    )
-
-    # Calculate the available source page range.
+    # Save the page range represented by the source chunks.
     page_numbers = [
         chunk["page_start"]
         for chunk in chunks
@@ -71,12 +62,30 @@ def generate_questions(
     ]
 
     source_page_start = min(page_numbers) if page_numbers else None
-    source_page_end = max(page_numbers) if page_numbers else None
+
+    source_page_end_values = [
+        chunk.get("page_end") or chunk.get("page_start")
+        for chunk in chunks
+        if chunk.get("page_end") is not None
+        or chunk.get("page_start") is not None
+    ]
+
+    source_page_end = (
+        max(source_page_end_values)
+        if source_page_end_values
+        else None
+    )
+
+    generated = generate_mcqs(
+        topic_title=topic["title"],
+        difficulty=difficulty,
+        number_of_questions=number_of_questions,
+        material=material,
+    )
 
     saved_ids = []
 
     for question in generated:
-
         question_id = question_repository.save_generated_question(
             user_id=user_id,
             course_id=course_id,
@@ -94,14 +103,12 @@ def generate_questions(
     return {
         "topic_id": topic_id,
         "document_id": document_id,
+        "source_page_start": source_page_start,
+        "source_page_end": source_page_end,
         "generated_count": len(saved_ids),
         "question_ids": saved_ids,
     }
 
-
-# ==========================================
-# Get Questions
-# ==========================================
 
 def get_questions(
     user_id,
@@ -117,10 +124,6 @@ def get_questions(
     )
 
 
-# ==========================================
-# Start Practice
-# ==========================================
-
 def start_practice(
     user_id,
     course_id,
@@ -130,7 +133,6 @@ def start_practice(
     if not question_ids:
         raise ValueError("Select at least one question")
 
-    # Reject duplicate IDs before processing questions.
     if len(question_ids) != len(set(question_ids)):
         raise ValueError("Duplicate questions are not allowed")
 
@@ -140,7 +142,6 @@ def start_practice(
     db_questions = []
 
     for question_id in question_ids:
-
         question = practice_repository.get_question(
             question_id,
             user_id,
@@ -162,9 +163,6 @@ def start_practice(
         len(db_questions),
     )
 
-    # Persist the exact question set and order.
-    from app.db.client import get_db
-
     rows = [
         {
             "session_id": session["id"],
@@ -177,11 +175,9 @@ def start_practice(
 
     get_db().table("practice_session_questions").insert(rows).execute()
 
-    # Return question options without answer keys.
     result_questions = []
 
     for question in db_questions:
-
         options = (
             get_db()
             .table("question_options")
@@ -191,16 +187,20 @@ def start_practice(
             .execute()
         )
 
+        source = question_repository.get_source_reference(
+            user_id=user_id,
+            course_id=course_id,
+            document_id=question.get("source_document_id"),
+            page_start=question.get("source_page_start"),
+            page_end=question.get("source_page_end"),
+        )
+
         result_questions.append({
             "id": question["id"],
             "question_text": question["question_text"],
-            "question_type": question.get("question_type", "mcq"),
             "difficulty": question["difficulty"],
-            "max_marks": question.get("max_marks", 1),
-            "source_document_id": question.get("source_document_id"),
-            "source_page_start": question.get("source_page_start"),
-            "source_page_end": question.get("source_page_end"),
             "options": options.data or [],
+            "source": source,
         })
 
     return {
@@ -209,10 +209,6 @@ def start_practice(
         "questions": result_questions,
     }
 
-
-# ==========================================
-# Submit MCQ Answer
-# ==========================================
 
 def submit_answer(
     user_id,
@@ -233,9 +229,6 @@ def submit_answer(
 
     if session["status"] != "in_progress":
         raise ValueError("Practice session is not active")
-
-    # Verify that this question was assigned to this session.
-    from app.db.client import get_db
 
     assigned = (
         get_db()
@@ -273,9 +266,9 @@ def submit_answer(
 
     is_correct = bool(option["is_correct"])
 
-    # Show the student the REAL answer, even when they picked a wrong option.
     correct_option = (
-        option if is_correct
+        option
+        if is_correct
         else practice_repository.get_correct_option(question_id)
     )
 
@@ -288,14 +281,19 @@ def submit_answer(
         response_time_seconds=response_time_seconds,
     )
 
-    # Refresh progress immediately after saving the attempt.
-    practice_repository.refresh_topic_progress(
-        user_id,
-        course_id,
-        question["topic_id"],
-    )
+    if question["topic_id"]:
+        practice_repository.refresh_topic_progress(
+            user_id,
+            course_id,
+            question["topic_id"],
+        )
+    else:
+        practice_repository.refresh_topic_progress(
+            user_id,
+            course_id,
+            None,
+        )
 
-    # Recalculate session totals from persisted attempts.
     attempts = practice_repository.get_session_attempts(
         session_id,
         user_id,
@@ -307,10 +305,10 @@ def submit_answer(
         1 for item in attempts if item["is_correct"]
     )
 
-    accuracy = (
-        round((correct_count / total_answered) * 100, 2)
-        if total_answered else 0
-    )
+    accuracy = round(
+        (correct_count / total_answered) * 100,
+        2
+    ) if total_answered else 0
 
     completed = total_answered >= session["total_questions"]
 
@@ -326,17 +324,45 @@ def submit_answer(
         }
     )
 
+    source = question_repository.get_source_reference(
+        user_id=user_id,
+        course_id=course_id,
+        document_id=question.get("source_document_id"),
+        page_start=question.get("source_page_start"),
+        page_end=question.get("source_page_end"),
+    )
+
+    # Give a useful next step after a wrong answer.
+    mistake_follow_up = None
+
+    if not is_correct:
+        mistake_follow_up = {
+            "topic_id": question.get("topic_id"),
+            "action": "revise_topic",
+            "title": "Revise this topic",
+            "description": (
+                "Review the linked source material, then practise "
+                "another question from this topic."
+            ),
+            "recommended_next_step": (
+                "Read the source pages and attempt another question "
+                "from the same topic."
+            ),
+        }
+
     return {
         "attempt_id": attempt["id"],
         "is_correct": is_correct,
         "correct_option": (
             {
                 "id": correct_option["id"],
-                "option_text": correct_option["option_text"]
+                "option_text": correct_option["option_text"],
             }
             if correct_option else None
         ),
         "explanation": question["explanation"],
+        "source": source,
+        "mistake_follow_up": mistake_follow_up,
         "progress": {
             "answered": total_answered,
             "total": session["total_questions"],
@@ -344,4 +370,194 @@ def submit_answer(
             "accuracy_percentage": accuracy,
             "completed": completed,
         },
+    }
+
+
+def get_session_report(user_id, course_id, session_id):
+    session = practice_repository.get_session(
+        session_id,
+        user_id,
+        course_id,
+    )
+
+    if not session:
+        raise ValueError("Practice session not found")
+
+    attempts = practice_repository.get_session_attempts(
+        session_id,
+        user_id,
+    )
+
+    attempt_question_ids = [
+        attempt["question_id"]
+        for attempt in attempts
+    ]
+
+    question_map = {}
+
+    if attempt_question_ids:
+        question_result = (
+            get_db()
+            .table("generated_questions")
+            .select(
+                "id, topic_id, question_text, explanation, "
+                "source_document_id, source_page_start, source_page_end"
+            )
+            .eq("user_id", user_id)
+            .eq("course_id", course_id)
+            .in_("id", attempt_question_ids)
+            .execute()
+        )
+
+        question_map = {
+            question["id"]: question
+            for question in (question_result.data or [])
+        }
+
+    topic_ids = list({
+        question["topic_id"]
+        for question in question_map.values()
+        if question.get("topic_id")
+    })
+
+    topic_map = {}
+
+    if topic_ids:
+        topic_result = (
+            get_db()
+            .table("syllabus_topics")
+            .select("id, title")
+            .eq("user_id", user_id)
+            .eq("course_id", course_id)
+            .in_("id", topic_ids)
+            .execute()
+        )
+
+        topic_map = {
+            topic["id"]: topic["title"]
+            for topic in (topic_result.data or [])
+        }
+
+    correct_count = sum(
+        1 for attempt in attempts if attempt["is_correct"]
+    )
+
+    incorrect_count = len(attempts) - correct_count
+
+    accuracy = round(
+        (correct_count / len(attempts)) * 100,
+        2
+    ) if attempts else 0
+
+    response_times = [
+        attempt["response_time_seconds"]
+        for attempt in attempts
+        if attempt.get("response_time_seconds") is not None
+    ]
+
+    average_response_time = (
+        round(sum(response_times) / len(response_times), 2)
+        if response_times else None
+    )
+
+    topic_breakdown = {}
+
+    incorrect_questions = []
+
+    for attempt in attempts:
+        question = question_map.get(attempt["question_id"])
+
+        if not question:
+            continue
+
+        topic_id = question.get("topic_id")
+        topic_title = topic_map.get(topic_id, "Unassigned topic")
+
+        if topic_id not in topic_breakdown:
+            topic_breakdown[topic_id] = {
+                "topic_id": topic_id,
+                "topic_title": topic_title,
+                "answered": 0,
+                "correct": 0,
+                "incorrect": 0,
+            }
+
+        topic_breakdown[topic_id]["answered"] += 1
+
+        if attempt["is_correct"]:
+            topic_breakdown[topic_id]["correct"] += 1
+        else:
+            topic_breakdown[topic_id]["incorrect"] += 1
+
+            source = question_repository.get_source_reference(
+                user_id=user_id,
+                course_id=course_id,
+                document_id=question.get("source_document_id"),
+                page_start=question.get("source_page_start"),
+                page_end=question.get("source_page_end"),
+            )
+
+            incorrect_questions.append({
+                "question_id": question["id"],
+                "question_text": question["question_text"],
+                "explanation": question["explanation"],
+                "topic_id": topic_id,
+                "topic_title": topic_title,
+                "source": source,
+                "follow_up": {
+                    "action": "revise_topic",
+                    "title": f"Revise {topic_title}",
+                    "description": (
+                        "Review the source material and practise "
+                        "another question from this topic."
+                    ),
+                },
+            })
+
+    for topic in topic_breakdown.values():
+        topic["accuracy_percentage"] = round(
+            (topic["correct"] / topic["answered"]) * 100,
+            2
+        ) if topic["answered"] else 0
+
+    follow_up_tasks = []
+
+    for topic in topic_breakdown.values():
+        if topic["incorrect"] > 0:
+            follow_up_tasks.append({
+                "topic_id": topic["topic_id"],
+                "topic_title": topic["topic_title"],
+                "title": f"Revise {topic['topic_title']}",
+                "description": (
+                    f"You answered {topic['incorrect']} question(s) "
+                    "incorrectly in this topic. Review the source "
+                    "material and practise this topic again."
+                ),
+                "reason": "incorrect_answers",
+            })
+
+    return {
+        "session": {
+            "id": session["id"],
+            "status": session["status"],
+            "topic_id": session.get("topic_id"),
+            "total_questions": session["total_questions"],
+            "started_at": session["started_at"],
+            "completed_at": session.get("completed_at"),
+        },
+        "score": {
+            "answered": len(attempts),
+            "total_questions": session["total_questions"],
+            "correct": correct_count,
+            "incorrect": incorrect_count,
+            "unanswered": max(
+                session["total_questions"] - len(attempts),
+                0
+            ),
+            "accuracy_percentage": accuracy,
+            "average_response_time_seconds": average_response_time,
+        },
+        "topic_breakdown": list(topic_breakdown.values()),
+        "incorrect_questions": incorrect_questions,
+        "follow_up_tasks": follow_up_tasks,
     }

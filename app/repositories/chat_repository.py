@@ -4,6 +4,11 @@ from app.db.helpers import data_of
 
 
 def get_session(session_id, user_id, course_id):
+    """
+    Get a chat session only if it belongs to the
+    requested user and course.
+    """
+
     result = (
         get_db()
         .table("chat_sessions")
@@ -14,10 +19,15 @@ def get_session(session_id, user_id, course_id):
         .maybe_single()
         .execute()
     )
+
     return data_of(result)
 
 
 def create_session(user_id, course_id, question):
+    """
+    Create a new chat session.
+    """
+
     result = (
         get_db()
         .table("chat_sessions")
@@ -30,10 +40,15 @@ def create_session(user_id, course_id, question):
         .single()
         .execute()
     )
+
     return result.data
 
 
 def get_recent_messages(session_id, user_id, limit=8):
+    """
+    Get recent messages for conversation context.
+    """
+
     result = (
         get_db()
         .table("chat_messages")
@@ -44,6 +59,7 @@ def get_recent_messages(session_id, user_id, limit=8):
         .limit(limit)
         .execute()
     )
+
     return list(reversed(result.data or []))
 
 
@@ -57,7 +73,14 @@ def save_message(
     depth_mode=None,
     evidence_strength=None,
 ):
-    payload = {
+    """
+    Save a user or assistant message.
+
+    The additional fields are optional so existing
+    calls to this function remain compatible.
+    """
+
+    message_data = {
         "session_id": session_id,
         "user_id": user_id,
         "role": role,
@@ -71,23 +94,29 @@ def save_message(
     result = (
         get_db()
         .table("chat_messages")
-        .insert(payload)
+        .insert(message_data)
         .select("*")
         .single()
         .execute()
     )
+
     return result.data
 
 
 def save_sources(message_id, user_id, sources):
+    """
+    Save source references connected to an assistant message.
+    """
+
     if not sources:
         return
 
     rows = []
+
     for source in sources:
         rows.append({
             "message_id": message_id,
-            "chunk_id": source.get("chunk_id"),
+            "chunk_id": source["chunk_id"],
             "document_id": source["document_id"],
             "user_id": user_id,
             "page_number": source.get("page_start"),
@@ -99,35 +128,42 @@ def save_sources(message_id, user_id, sources):
 
 
 def list_sessions(user_id, course_id, limit=30):
+    """
+    List recent chat sessions for one user and course.
+    """
+
     result = (
         get_db()
         .table("chat_sessions")
-        .select("id, title, created_at, updated_at")
+        .select("id, course_id, user_id, title, created_at, updated_at")
         .eq("user_id", user_id)
         .eq("course_id", course_id)
         .order("updated_at", desc=True)
         .limit(limit)
         .execute()
     )
+
     return result.data or []
 
 
-def list_messages(session_id, user_id, course_id, limit=100):
-    session = get_session(session_id, user_id, course_id)
-    if not session:
-        raise ValueError("Chat session not found")
+def get_session_messages(session_id, user_id):
+    """
+    Get all messages belonging to a session.
+
+    Each message also includes its saved source references.
+    """
 
     result = (
         get_db()
         .table("chat_messages")
         .select(
-            "id, role, content, insufficient_evidence, "
-            "depth_mode, evidence_strength, model_name, created_at"
+            "id, session_id, user_id, role, content, model_name, "
+            "insufficient_evidence, depth_mode, evidence_strength, "
+            "created_at"
         )
         .eq("session_id", session_id)
         .eq("user_id", user_id)
-        .order("created_at")
-        .limit(limit)
+        .order("created_at", desc=False)
         .execute()
     )
 
@@ -142,12 +178,10 @@ def list_messages(session_id, user_id, course_id, limit=100):
             )
             .eq("message_id", message["id"])
             .eq("user_id", user_id)
-            .order("source_rank")
+            .order("source_rank", desc=False)
             .execute()
         )
+
         message["sources"] = source_result.data or []
 
-    return {
-        "session": session,
-        "messages": messages,
-    }
+    return messages
