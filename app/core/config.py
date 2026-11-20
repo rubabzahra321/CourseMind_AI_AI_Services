@@ -1,3 +1,4 @@
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +29,20 @@ class Settings(BaseSettings):
     # MCQ
     mcq_max_questions: int = 20
     mcq_context_max_chars: int = 18000
+
+    # Phase 3: paper analytics
+    min_papers_for_frequency: int = 3
+    often_examined_frequency_percentage: float = 50.0
+
+    # Phase 3: lecture coverage
+    enough_material_chunk_count: int = 3
+    material_similarity_threshold: float = 0.55
+
+    # Phase 3: priority defaults
+    priority_frequency_weight: float = 0.35
+    priority_marks_weight: float = 0.25
+    priority_syllabus_weight: float = 0.20
+    priority_mastery_weight: float = 0.20
 
     model_config = SettingsConfigDict(
         env_file=".env",

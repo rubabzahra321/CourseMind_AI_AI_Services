@@ -1,13 +1,30 @@
-from fastapi import FastAPI
-from app.api import health, stats, chat, agents,  quiz_duel
-from app.api import practice
 
-app = FastAPI(title="CourseMind AI Service")
+from fastapi import FastAPI
+
+from app.api import (
+    health,
+    stats,
+    chat,
+    agents,
+    quiz_duel,
+    practice,
+    analytics,
+)
+
+
+app = FastAPI(
+    title="CourseMind AI Service"
+)
+
 
 app.include_router(health.public)
 app.include_router(health.internal)
+
 app.include_router(stats.router)
 app.include_router(chat.router)
 app.include_router(practice.router)
 app.include_router(agents.router)
 app.include_router(quiz_duel.router)
+
+# Phase 3: Paper Analytics and Preparation Gaps
+app.include_router(analytics.router)
