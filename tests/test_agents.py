@@ -92,35 +92,91 @@ def test_utility_agent_returns_none_when_nothing_to_recommend():
     assert utility_based_agent([topic(is_leaf=False)]) is None
 
 
+
 # ------------------------------------------------------------ goal-based agent
 def test_goal_agent_requires_future_exam_date():
     with pytest.raises(ValueError):
         goal_based_agent([topic()], None)
+
     with pytest.raises(ValueError):
         goal_based_agent([topic()], date.today().isoformat())
+
     with pytest.raises(ValueError):
-        goal_based_agent([topic()], (date.today() - timedelta(days=1)).isoformat())
+        goal_based_agent(
+            [topic()],
+            (date.today() - timedelta(days=1)).isoformat()
+        )
 
 
-def test_goal_agent_schedules_highest_utility_first_one_per_day():
-    topics = [topic(topic_id="a", accuracy_percentage=90),
-              topic(topic_id="b", accuracy_percentage=10),
-              topic(topic_id="c", accuracy_percentage=50)]
+def test_goal_agent_schedules_highest_utility_topics_first():
+    topics = [
+        topic(topic_id="a", accuracy_percentage=90),
+        topic(topic_id="b", accuracy_percentage=10),
+        topic(topic_id="c", accuracy_percentage=50),
+    ]
+
     exam = (date.today() + timedelta(days=10)).isoformat()
     plan = goal_based_agent(topics, exam)
-    assert [p["topic_id"] for p in plan] == ["b", "c", "a"]
-    assert [p["position"] for p in plan] == [1, 2, 3]
-    assert [p["planned_date"] for p in plan] == [(date.today() + timedelta(days=i)).isoformat() for i in range(3)]
+
+    items = plan["items"]
+
+    assert [item["topic_id"] for item in items] == [
+        "b", "b", "c", "c", "a", "a"
+    ]
+
+    assert [item["task_type"] for item in items] == [
+        "review", "solve",
+        "review", "solve",
+        "review", "solve",
+    ]
+
+    assert [item["position"] for item in items] == [
+        1, 2, 3, 4, 5, 6
+    ]
+
+    today = date.today()
+
+    assert [item["planned_date"] for item in items] == [
+        today.isoformat(),
+        today.isoformat(),
+        today.isoformat(),
+        today.isoformat(),
+        today.isoformat(),
+        (today + timedelta(days=1)).isoformat(),
+    ]
 
 
 def test_goal_agent_never_schedules_on_or_after_exam_day():
-    topics = [topic(topic_id=str(i), accuracy_percentage=i) for i in range(10)]
+    topics = [
+        topic(topic_id=str(i), accuracy_percentage=i)
+        for i in range(10)
+    ]
+
     exam_day = date.today() + timedelta(days=3)
+
     plan = goal_based_agent(topics, exam_day.isoformat())
-    assert len(plan) == 10
-    assert all(date.fromisoformat(p["planned_date"]) < exam_day for p in plan)
+
+    assert plan["total_tasks"] == 20
+    assert plan["scheduled_tasks"] + len(plan["unscheduled_tasks"]) == 20
+
+    assert all(
+        date.fromisoformat(item["planned_date"]) < exam_day
+        for item in plan["items"]
+    )
 
 
 def test_goal_agent_skips_parent_topics_and_handles_empty():
     exam = (date.today() + timedelta(days=5)).isoformat()
-    assert goal_based_agent([topic(is_leaf=False)], exam) == []
+
+    parent_plan = goal_based_agent(
+        [topic(is_leaf=False)],
+        exam
+    )
+
+    assert parent_plan["items"] == []
+    assert parent_plan["total_tasks"] == 0
+
+    empty_plan = goal_based_agent([], exam)
+
+    assert empty_plan["items"] == []
+    assert empty_plan["total_tasks"] == 0

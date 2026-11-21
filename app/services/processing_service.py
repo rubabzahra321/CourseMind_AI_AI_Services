@@ -30,6 +30,31 @@ SAFE_FAILURE = (
 )
 
 
+# ==========================================
+# Document Notifications
+# ==========================================
+
+def _notify_document(
+    job: dict,
+    notification_type: str,
+    title: str,
+    message: str,
+) -> None:
+    try:
+        notification_repository.create_document_notification(
+            user_id=job["user_id"],
+            document_id=job["document_id"],
+            notification_type=notification_type,
+            title=title,
+            message=message,
+        )
+    except Exception:
+        log.exception(
+            "Failed to create notification for document %s",
+            job.get("document_id")
+        )
+
+
 def _get_document(job: dict) -> dict:
 
     doc = document_repository.get(
@@ -154,6 +179,14 @@ def _process_document(job: dict) -> None:
         }
     )
 
+    # Notify when document processing succeeds
+    _notify_document(
+        job,
+        "document_ready",
+        "Document Ready",
+        "Your document has been processed successfully."
+    )
+
 
 def _process_syllabus_topics(job: dict) -> None:
 
@@ -273,6 +306,14 @@ def _fail(
                 "status": "failed",
                 "processing_error": user_message
             }
+        )
+
+        # Notify when document processing permanently fails
+        _notify_document(
+            job,
+            "document_failed",
+            "Document Processing Failed",
+            user_message
         )
 
 

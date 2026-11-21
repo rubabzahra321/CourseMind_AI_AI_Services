@@ -11,6 +11,14 @@ from tests.conftest import (
 
 def test_topic_evidence_returns_reviewed_questions(db):
 
+    # Create the syllabus topic first.
+    db.seed("syllabus_topics", {
+        "id": TOPIC,
+        "user_id": USER,
+        "course_id": COURSE,
+        "title": "Binary Search",
+    })
+
     db.seed("documents", {
         "id": DOC,
         "user_id": USER,

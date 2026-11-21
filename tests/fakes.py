@@ -4,10 +4,10 @@ In-memory stand-in for the Supabase client used by the AI service.
 
 It copies the behaviour of the real supabase-py / postgrest client that matters
 for correctness:
-  * maybe_single().execute() returns None when no row matches.
-  * single() raises when the row count is not exactly 1.
-  * insert() returns the inserted rows; .select(cols) limits returned columns.
-  * UNIQUE constraints from the SQL schema are enforced.
+    * maybe_single().execute() returns None when no row matches.
+    * single() raises when the row count is not exactly 1.
+    * insert() returns the inserted rows; .select(cols) limits returned columns.
+    * UNIQUE constraints from the SQL schema are enforced.
 """
 
 import copy
@@ -105,6 +105,7 @@ class Query:
 
         self.op = "select"
         self.payload = None
+        self.conflict_cols = None
 
         self.filters = []
         self.orders = []
@@ -126,6 +127,19 @@ class Query:
     def insert(self, payload, **_):
         self.op = "insert"
         self.payload = payload
+        return self
+
+
+    def upsert(self, payload, on_conflict=None, **_):
+        self.op = "upsert"
+        self.payload = payload
+
+        if on_conflict:
+            self.conflict_cols = [
+                col.strip()
+                for col in on_conflict.split(",")
+            ]
+
         return self
 
 
@@ -256,7 +270,7 @@ class Query:
 
         table = self.db.tables[self.name]
 
-        if self.op == "insert":
+        if self.op in {"insert", "upsert"}:
 
             items = (
                 self.payload
@@ -292,13 +306,34 @@ class Query:
                         stamp
                     )
 
-                self.db.check_unique(
-                    self.name,
-                    row
-                )
+                existing = None
 
-                table.append(row)
-                inserted.append(row)
+                if self.op == "upsert" and self.conflict_cols:
+
+                    for current_row in table:
+
+                        if all(
+                            str(current_row.get(col)) == str(row.get(col))
+                            for col in self.conflict_cols
+                        ):
+                            existing = current_row
+                            break
+
+                if existing:
+                    existing.update(
+                        copy.deepcopy(item)
+                    )
+
+                    inserted.append(existing)
+
+                else:
+                    self.db.check_unique(
+                        self.name,
+                        row
+                    )
+
+                    table.append(row)
+                    inserted.append(row)
 
             return self._finish(inserted)
 

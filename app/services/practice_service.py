@@ -1,3 +1,7 @@
+
+import hashlib
+import json
+
 from datetime import datetime, timezone
 
 from app.core.config import settings
@@ -12,6 +16,61 @@ from app.repositories import (
 )
 
 
+# =========================================================
+# IDEMPOTENCY HELPERS
+# =========================================================
+
+def _get_idempotency_request(user_id, course_id, idempotency_key):
+    result = (
+        get_db()
+        .table("ai_idempotency_requests")
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("course_id", course_id)
+        .eq("idempotency_key", idempotency_key)
+        .maybe_single()
+        .execute()
+    )
+
+    return data_of(result)
+
+
+def _create_idempotency_request(
+    user_id,
+    course_id,
+    idempotency_key,
+    request_hash,
+):
+    get_db().table("ai_idempotency_requests").insert({
+        "user_id": user_id,
+        "course_id": course_id,
+        "idempotency_key": idempotency_key,
+        "request_hash": request_hash,
+        "status": "processing",
+    }).execute()
+
+
+def _update_idempotency_request(
+    user_id,
+    course_id,
+    idempotency_key,
+    values,
+):
+    (
+        get_db()
+        .table("ai_idempotency_requests")
+        .update(values)
+        .eq("user_id", user_id)
+        .eq("course_id", course_id)
+        .eq("idempotency_key", idempotency_key)
+        .execute()
+    )
+
+
+# =========================================================
+# GENERATE QUESTIONS WITH IDEMPOTENCY
+# =========================================================
+
 def generate_questions(
     user_id,
     course_id,
@@ -19,96 +78,172 @@ def generate_questions(
     document_id,
     number_of_questions,
     difficulty,
+    idempotency_key=None,
 ):
-    topic = question_repository.get_topic(
-        user_id,
-        course_id,
-        topic_id
-    )
+    request_hash = hashlib.sha256(
+        json.dumps({
+            "user_id": user_id,
+            "course_id": course_id,
+            "topic_id": topic_id,
+            "document_id": document_id,
+            "number_of_questions": number_of_questions,
+            "difficulty": difficulty,
+        }, sort_keys=True).encode()
+    ).hexdigest()
 
-    if not topic:
-        raise ValueError("Topic not found in this course")
-
-    document = question_repository.get_document(
-        user_id,
-        course_id,
-        document_id
-    )
-
-    if not document:
-        raise ValueError("Ready source document not found")
-
-    chunks = question_repository.get_document_chunks(
-        user_id,
-        course_id,
-        document_id
-    )
-
-    if not chunks:
-        raise ValueError("Source document has no extracted text")
-
-    material = "\n\n".join(
-        f"Page {chunk['page_start']}:\n{chunk['content']}"
-        for chunk in chunks
-    )
-
-    material = material[:settings.mcq_context_max_chars]
-
-    # Save the page range represented by the source chunks.
-    page_numbers = [
-        chunk["page_start"]
-        for chunk in chunks
-        if chunk.get("page_start") is not None
-    ]
-
-    source_page_start = min(page_numbers) if page_numbers else None
-
-    source_page_end_values = [
-        chunk.get("page_end") or chunk.get("page_start")
-        for chunk in chunks
-        if chunk.get("page_end") is not None
-        or chunk.get("page_start") is not None
-    ]
-
-    source_page_end = (
-        max(source_page_end_values)
-        if source_page_end_values
-        else None
-    )
-
-    generated = generate_mcqs(
-        topic_title=topic["title"],
-        difficulty=difficulty,
-        number_of_questions=number_of_questions,
-        material=material,
-    )
-
-    saved_ids = []
-
-    for question in generated:
-        question_id = question_repository.save_generated_question(
-            user_id=user_id,
-            course_id=course_id,
-            topic_id=topic_id,
-            document_id=document_id,
-            question=question,
-            difficulty=difficulty,
-            model_name=settings.gemini_chat_model,
-            source_page_start=source_page_start,
-            source_page_end=source_page_end,
+    if idempotency_key:
+        existing = _get_idempotency_request(
+            user_id,
+            course_id,
+            idempotency_key,
         )
 
-        saved_ids.append(question_id)
+        if existing:
+            if existing["request_hash"] != request_hash:
+                raise ValueError(
+                    "Idempotency key was already used for a different request"
+                )
 
-    return {
-        "topic_id": topic_id,
-        "document_id": document_id,
-        "source_page_start": source_page_start,
-        "source_page_end": source_page_end,
-        "generated_count": len(saved_ids),
-        "question_ids": saved_ids,
-    }
+            if existing["status"] == "completed":
+                return existing["response"]
 
+            if existing["status"] == "processing":
+                raise ValueError(
+                    "This question generation request is already processing"
+                )
+
+            _update_idempotency_request(
+                user_id,
+                course_id,
+                idempotency_key,
+                {"status": "processing", "response": None},
+            )
+
+        else:
+            _create_idempotency_request(
+                user_id,
+                course_id,
+                idempotency_key,
+                request_hash,
+            )
+
+    try:
+        topic = question_repository.get_topic(
+            user_id,
+            course_id,
+            topic_id,
+        )
+
+        if not topic:
+            raise ValueError("Topic not found in this course")
+
+        document = question_repository.get_document(
+            user_id,
+            course_id,
+            document_id,
+        )
+
+        if not document:
+            raise ValueError("Ready source document not found")
+
+        chunks = question_repository.get_document_chunks(
+            user_id,
+            course_id,
+            document_id,
+        )
+
+        if not chunks:
+            raise ValueError("Source document has no extracted text")
+
+        material = "\n\n".join(
+            f"Page {chunk['page_start']}:\n{chunk['content']}"
+            for chunk in chunks
+        )
+
+        material = material[:settings.mcq_context_max_chars]
+
+        page_numbers = [
+            chunk["page_start"]
+            for chunk in chunks
+            if chunk.get("page_start") is not None
+        ]
+
+        source_page_start = min(page_numbers) if page_numbers else None
+
+        source_page_end_values = [
+            chunk.get("page_end") or chunk.get("page_start")
+            for chunk in chunks
+            if chunk.get("page_end") is not None
+            or chunk.get("page_start") is not None
+        ]
+
+        source_page_end = (
+            max(source_page_end_values)
+            if source_page_end_values
+            else None
+        )
+
+        generated = generate_mcqs(
+            topic_title=topic["title"],
+            difficulty=difficulty,
+            number_of_questions=number_of_questions,
+            material=material,
+        )
+
+        saved_ids = []
+
+        for question in generated:
+            question_id = question_repository.save_generated_question(
+                user_id=user_id,
+                course_id=course_id,
+                topic_id=topic_id,
+                document_id=document_id,
+                question=question,
+                difficulty=difficulty,
+                model_name=settings.gemini_chat_model,
+                source_page_start=source_page_start,
+                source_page_end=source_page_end,
+            )
+
+            saved_ids.append(question_id)
+
+        response = {
+            "topic_id": topic_id,
+            "document_id": document_id,
+            "source_page_start": source_page_start,
+            "source_page_end": source_page_end,
+            "generated_count": len(saved_ids),
+            "question_ids": saved_ids,
+        }
+
+        if idempotency_key:
+            _update_idempotency_request(
+                user_id,
+                course_id,
+                idempotency_key,
+                {
+                    "status": "completed",
+                    "response": response,
+                },
+            )
+
+        return response
+
+    except Exception:
+        if idempotency_key:
+            _update_idempotency_request(
+                user_id,
+                course_id,
+                idempotency_key,
+                {"status": "failed"},
+            )
+
+        raise
+
+
+# =========================================================
+# GET QUESTIONS
+# =========================================================
 
 def get_questions(
     user_id,
@@ -123,6 +258,10 @@ def get_questions(
         limit,
     )
 
+
+# =========================================================
+# START PRACTICE
+# =========================================================
 
 def start_practice(
     user_id,
@@ -209,6 +348,10 @@ def start_practice(
         "questions": result_questions,
     }
 
+
+# =========================================================
+# SUBMIT ANSWER
+# =========================================================
 
 def submit_answer(
     user_id,
@@ -372,6 +515,10 @@ def submit_answer(
         },
     }
 
+
+# =========================================================
+# GET SESSION REPORT
+# =========================================================
 
 def get_session_report(user_id, course_id, session_id):
     session = practice_repository.get_session(

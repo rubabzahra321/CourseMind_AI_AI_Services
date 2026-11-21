@@ -34,6 +34,23 @@ class Settings(BaseSettings):
     mcq_max_questions: int = 20
     mcq_context_max_chars: int = 18000
 
+
+    # Analytics - Priority Weights
+    priority_frequency_weight: float = 0.40
+    priority_marks_weight: float = 0.25
+    priority_syllabus_weight: float = 0.20
+    priority_mastery_weight: float = 0.15
+
+    # Analytics - Data Sufficiency
+    min_papers_for_frequency: int = 2
+
+    # Analytics - Material Mapping
+    material_similarity_threshold: float = 0.55
+    enough_material_chunk_count: int = 3
+
+    # Analytics - Gap Detection
+    often_examined_frequency_percentage: float = 50.0
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore",

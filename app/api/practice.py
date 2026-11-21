@@ -24,6 +24,7 @@ class GenerateRequest(BaseModel):
     user_id: UUID
     topic_id: UUID
     document_id: UUID
+    idempotency_key: UUID | None = None
     number_of_questions: int = Field(default=5, ge=1, le=20)
     difficulty: Literal["easy", "medium", "hard"] = "medium"
 
@@ -46,8 +47,10 @@ class QuestionListRequest(BaseModel):
     topic_id: UUID | None = None
     limit: int = Field(default=20, ge=1, le=100)
 
+
 class SessionReportRequest(BaseModel):
     user_id: UUID
+
 
 # =========================================================
 # TASK 11.3: PAST-PAPER PRACTICE REQUESTS
@@ -67,6 +70,7 @@ class StartPastPaperPracticeRequest(BaseModel):
 
 class SubmitPastPaperAnswerRequest(BaseModel):
     user_id: UUID
+
     question_id: UUID
 
     response_text: str = Field(
@@ -95,6 +99,11 @@ def generate(course_id: UUID, body: GenerateRequest):
             document_id=str(body.document_id),
             number_of_questions=body.number_of_questions,
             difficulty=body.difficulty,
+            idempotency_key=(
+                str(body.idempotency_key)
+                if body.idempotency_key
+                else None
+            ),
         )
 
     except ValueError as exc:
@@ -262,6 +271,7 @@ def submit_past_paper_attempt(
             status_code=500,
             detail="Could not save past-paper answer"
         ) from exc
+
 
 @router.post(
     "/courses/{course_id}/practice/sessions/{session_id}/report"
