@@ -35,6 +35,14 @@ def agent_dashboard(course_id: UUID, payload: UserRequest):
     )
 
 
+@router.post("/course-dashboard")
+def course_dashboard(course_id: UUID, payload: UserRequest):
+    return stage6_service.get_course_dashboard(
+        payload.user_id,
+        course_id,
+    )
+
+
 @router.post("/prerequisites/{topic_id}")
 def prerequisite_path(
     course_id: UUID,

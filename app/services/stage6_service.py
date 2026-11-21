@@ -349,3 +349,251 @@ def update_study_plan_item(
         raise ValueError("Study plan item not found.")
 
     return result[0] if isinstance(result, list) else result
+
+def get_course_dashboard(user_id: UUID, course_id: UUID):
+    data = repo.get_course_dashboard_data(user_id, course_id)
+
+    topics = data["topics"]
+    progress_rows = data["progress_rows"]
+    material_links = data["material_links"]
+    plan_items = data["plan_items"]
+    sessions = data["practice_sessions"]
+
+    # -------------------------------------------------
+    # 1. Prepare topic progress and coverage lookups.
+    # -------------------------------------------------
+
+    progress_map = {
+        str(row["topic_id"]): row
+        for row in progress_rows
+    }
+
+    link_counts = {}
+
+    for link in material_links:
+        topic_id = str(link["topic_id"])
+        link_counts[topic_id] = link_counts.get(topic_id, 0) + 1
+
+    # Use the same threshold as your Phase 3 coverage endpoint
+    # if you configured a different threshold there.
+    enough_material_threshold = 3
+
+    topic_details = []
+
+    coverage_counts = {
+        "enough": 0,
+        "thin": 0,
+        "no_material": 0,
+    }
+
+    mastery_counts = {
+        "Strong": 0,
+        "Developing": 0,
+        "Weak": 0,
+        "Not Yet Assessed": 0,
+    }
+
+    assessed_accuracies = []
+
+    for topic in topics:
+        topic_id = str(topic["id"])
+        link_count = link_counts.get(topic_id, 0)
+
+        if link_count == 0:
+            coverage_status = "no_material"
+        elif link_count < enough_material_threshold:
+            coverage_status = "thin"
+        else:
+            coverage_status = "enough"
+
+        coverage_counts[coverage_status] += 1
+
+        progress = progress_map.get(topic_id, {})
+
+        mastery_status = progress.get(
+            "status",
+            "Not Yet Assessed",
+        )
+
+        if mastery_status not in mastery_counts:
+            mastery_status = "Not Yet Assessed"
+
+        mastery_counts[mastery_status] += 1
+
+        accuracy = progress.get("accuracy_percentage")
+
+        if accuracy is not None:
+            assessed_accuracies.append(float(accuracy))
+
+        topic_details.append({
+            "topic_id": topic_id,
+            "topic_title": topic["title"],
+            "parent_topic_id": topic.get("parent_topic_id"),
+            "material_links": link_count,
+            "coverage_status": coverage_status,
+            "attempts": progress.get("attempts", 0),
+            "correct_answers": progress.get("correct_answers", 0),
+            "accuracy_percentage": accuracy,
+            "mastery_status": mastery_status,
+            "last_practised_at": progress.get("last_practised_at"),
+        })
+
+    # -------------------------------------------------
+    # 2. Calculate overall coverage.
+    # -------------------------------------------------
+
+    total_topics = len(topics)
+
+    covered_topics = (
+        coverage_counts["enough"] +
+        coverage_counts["thin"]
+    )
+
+    coverage_percentage = (
+        round((covered_topics / total_topics) * 100, 2)
+        if total_topics else 0
+    )
+
+    enough_percentage = (
+        round(
+            coverage_counts["enough"] / total_topics * 100,
+            2,
+        )
+        if total_topics else 0
+    )
+
+    # -------------------------------------------------
+    # 3. Calculate revision task progress.
+    # -------------------------------------------------
+
+    total_tasks = len(plan_items)
+
+    completed_tasks = sum(
+        1
+        for item in plan_items
+        if item.get("is_done") or item.get("status") == "done"
+    )
+
+    skipped_tasks = sum(
+        1
+        for item in plan_items
+        if item.get("status") == "skipped"
+    )
+
+    rescheduled_tasks = sum(
+        1
+        for item in plan_items
+        if item.get("status") == "rescheduled"
+    )
+
+    pending_tasks = max(
+        0,
+        total_tasks - completed_tasks - skipped_tasks,
+    )
+
+    task_completion_percentage = (
+        round(completed_tasks / total_tasks * 100, 2)
+        if total_tasks else 0
+    )
+
+    # -------------------------------------------------
+    # 4. Calculate practice performance.
+    # -------------------------------------------------
+
+    completed_sessions = [
+        session
+        for session in sessions
+        if session.get("status") == "completed"
+    ]
+
+    session_accuracies = [
+        float(session["accuracy_percentage"])
+        for session in completed_sessions
+        if session.get("accuracy_percentage") is not None
+    ]
+
+    average_practice_score = (
+        round(
+            sum(session_accuracies) / len(session_accuracies),
+            2,
+        )
+        if session_accuracies else None
+    )
+
+    total_questions = sum(
+        int(session.get("total_questions") or 0)
+        for session in completed_sessions
+    )
+
+    correct_answers = sum(
+        int(session.get("correct_answers") or 0)
+        for session in completed_sessions
+    )
+
+    overall_practice_accuracy = (
+        round(correct_answers / total_questions * 100, 2)
+        if total_questions else None
+    )
+
+    # -------------------------------------------------
+    # 5. Calculate overall mastery.
+    # -------------------------------------------------
+
+    assessed_topics = (
+        mastery_counts["Strong"] +
+        mastery_counts["Developing"] +
+        mastery_counts["Weak"]
+    )
+
+    average_topic_accuracy = (
+        round(
+            sum(assessed_accuracies) / len(assessed_accuracies),
+            2,
+        )
+        if assessed_accuracies else None
+    )
+
+    return {
+        "course_id": str(course_id),
+
+        "coverage": {
+            "total_topics": total_topics,
+            "covered_topics": covered_topics,
+            "enough_material": coverage_counts["enough"],
+            "thin_material": coverage_counts["thin"],
+            "no_material": coverage_counts["no_material"],
+            "coverage_percentage": coverage_percentage,
+            "enough_material_percentage": enough_percentage,
+        },
+
+        "revision": {
+            "active_plan_id": data["active_plan_id"],
+            "total_tasks": total_tasks,
+            "completed_tasks": completed_tasks,
+            "pending_tasks": pending_tasks,
+            "skipped_tasks": skipped_tasks,
+            "rescheduled_tasks": rescheduled_tasks,
+            "completion_percentage": task_completion_percentage,
+        },
+
+        "practice": {
+            "total_sessions": len(sessions),
+            "completed_sessions": len(completed_sessions),
+            "total_questions": total_questions,
+            "correct_answers": correct_answers,
+            "average_session_score": average_practice_score,
+            "overall_accuracy": overall_practice_accuracy,
+        },
+
+        "mastery": {
+            "total_topics": total_topics,
+            "assessed_topics": assessed_topics,
+            "not_assessed_topics": mastery_counts["Not Yet Assessed"],
+            "strong": mastery_counts["Strong"],
+            "developing": mastery_counts["Developing"],
+            "weak": mastery_counts["Weak"],
+            "average_topic_accuracy": average_topic_accuracy,
+        },
+
+        "topics": topic_details,
+    }

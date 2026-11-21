@@ -248,3 +248,93 @@ def mark_plan_item_done(user_id, course_id, item_id):
             "status": "done",
         },
     )
+
+
+def get_course_dashboard_data(user_id: UUID, course_id: UUID):
+    """
+    Collects the source data needed for the course dashboard.
+
+    Coverage is calculated from topic_chunk_links.
+    Mastery is read from topic_progress.
+    Revision progress is read from study_plan_items.
+    Practice scores are read from practice_sessions.
+    """
+
+    db = get_db()
+
+    topics = (
+        db.table("syllabus_topics")
+        .select("id,title,parent_topic_id")
+        .eq("user_id", str(user_id))
+        .eq("course_id", str(course_id))
+        .order("position")
+        .execute()
+        .data or []
+    )
+
+    progress_rows = (
+        db.table("topic_progress")
+        .select(
+            "topic_id,attempts,correct_answers,"
+            "accuracy_percentage,status,last_practised_at"
+        )
+        .eq("user_id", str(user_id))
+        .eq("course_id", str(course_id))
+        .execute()
+        .data or []
+    )
+
+    # Requires the Phase 3 topic_chunk_links migration.
+    material_links = (
+        db.table("topic_chunk_links")
+        .select("topic_id,chunk_id")
+        .eq("user_id", str(user_id))
+        .eq("course_id", str(course_id))
+        .execute()
+        .data or []
+    )
+
+    active_plan = (
+        db.table("study_plans")
+        .select("id")
+        .eq("user_id", str(user_id))
+        .eq("course_id", str(course_id))
+        .eq("status", "active")
+        .limit(1)
+        .execute()
+        .data or []
+    )
+
+    plan_items = []
+
+    if active_plan:
+        plan_items = (
+            db.table("study_plan_items")
+            .select("id,topic_id,is_done,status,task_type,planned_date")
+            .eq("user_id", str(user_id))
+            .eq("course_id", str(course_id))
+            .eq("plan_id", active_plan[0]["id"])
+            .execute()
+            .data or []
+        )
+
+    sessions = (
+        db.table("practice_sessions")
+        .select(
+            "id,status,total_questions,correct_answers,"
+            "accuracy_percentage,started_at,completed_at"
+        )
+        .eq("user_id", str(user_id))
+        .eq("course_id", str(course_id))
+        .execute()
+        .data or []
+    )
+
+    return {
+        "topics": topics,
+        "progress_rows": progress_rows,
+        "material_links": material_links,
+        "plan_items": plan_items,
+        "practice_sessions": sessions,
+        "active_plan_id": active_plan[0]["id"] if active_plan else None,
+    }
