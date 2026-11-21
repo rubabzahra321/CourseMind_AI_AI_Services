@@ -1,3 +1,4 @@
+
 from uuid import UUID
 from datetime import datetime, timezone
 
@@ -139,15 +140,13 @@ def get_owned_topic(user_id: UUID, course_id: UUID, topic_id: UUID):
 
 def get_course(user_id: UUID, course_id: UUID):
     result = (
-        get_db()
-        .table("courses")
-        .select("id,title,exam_date")
+        get_db().table("courses")
+        .select("id,title,exam_date,hours_per_day")
         .eq("id", str(course_id))
         .eq("user_id", str(user_id))
         .maybe_single()
         .execute()
     )
-
     return data_of(result)
 
 
@@ -223,14 +222,10 @@ def list_plan_items(user_id: UUID, course_id: UUID, plan_id: UUID):
     )
 
 
-def mark_plan_item_done(user_id, course_id, item_id):
+def update_plan_item(user_id, course_id, item_id, changes):
     result = (
-        get_db()
-        .table("study_plan_items")
-        .update({
-            "is_done": True,
-            "done_at": datetime.now(timezone.utc).isoformat(),
-        })
+        get_db().table("study_plan_items")
+        .update(changes)
         .eq("id", str(item_id))
         .eq("user_id", str(user_id))
         .eq("course_id", str(course_id))
@@ -238,3 +233,18 @@ def mark_plan_item_done(user_id, course_id, item_id):
     )
 
     return data_of(result)
+
+
+def mark_plan_item_done(user_id, course_id, item_id):
+    now = datetime.now(timezone.utc).isoformat()
+
+    return update_plan_item(
+        user_id,
+        course_id,
+        item_id,
+        {
+            "is_done": True,
+            "done_at": now,
+            "status": "done",
+        },
+    )

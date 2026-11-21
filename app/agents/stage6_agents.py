@@ -1,3 +1,4 @@
+
 from datetime import date, timedelta
 
 from app.search.algorithms import (
@@ -139,6 +140,128 @@ def calculate_utility(topic):
         )
 
     return round(score * 100, 2)
+
+
+def schedule_revision_tasks(
+    topic_stats,
+    topic_schedule,
+    exam_date,
+    hours_per_day=2,
+):
+    """
+    Converts the Phase 5 ordered topic schedule into
+    review, solve, and revisit-mistakes tasks.
+
+    Preserves the topic order supplied by the BFS/DFS
+    goal-based agent.
+    """
+
+    if not exam_date:
+        raise ValueError("Set an exam date first.")
+
+    hours_per_day = float(hours_per_day or 2)
+
+    if hours_per_day < 0.5 or hours_per_day > 12:
+        raise ValueError("Daily hours must be between 0.5 and 12.")
+
+    today = date.today()
+    exam_day = date.fromisoformat(str(exam_date)[:10])
+
+    if exam_day <= today:
+        raise ValueError("Exam date must be in the future.")
+
+    daily_minutes = int(hours_per_day * 60)
+    available_days = (exam_day - today).days
+
+    stats_by_id = {
+        str(topic["topic_id"]): topic
+        for topic in topic_stats
+    }
+
+    tasks = []
+
+    # Preserve the topic order produced by Phase 5.
+    for ordered_topic in topic_schedule:
+        topic_id = str(ordered_topic["topic_id"])
+        topic = stats_by_id.get(topic_id)
+
+        if not topic:
+            continue
+
+        utility_score = ordered_topic.get(
+            "utility_score",
+            calculate_utility(topic),
+        )
+
+        attempted = int(topic.get("attempted_questions") or 0)
+        correct = int(topic.get("correct_answers") or 0)
+        incorrect = max(0, attempted - correct)
+
+        common = {
+            "topic_id": topic_id,
+            "topic_title": topic.get("topic_title", "Untitled topic"),
+            "utility_score": utility_score,
+        }
+
+        tasks.append({
+            **common,
+            "task_type": "review",
+            "estimated_minutes": 20,
+            "reason": "Review the topic and its important concepts.",
+        })
+
+        tasks.append({
+            **common,
+            "task_type": "solve",
+            "estimated_minutes": 30,
+            "reason": "Solve practice questions for this topic.",
+        })
+
+        if incorrect > 0:
+            tasks.append({
+                **common,
+                "task_type": "revisit_mistakes",
+                "estimated_minutes": 15,
+                "reason": f"Revisit {incorrect} incorrect answers.",
+            })
+
+    scheduled = []
+    unscheduled = []
+
+    day_index = 0
+    used_minutes = 0
+    position = 1
+
+    for task in tasks:
+        minutes = task["estimated_minutes"]
+
+        if used_minutes + minutes > daily_minutes:
+            day_index += 1
+            used_minutes = 0
+
+        if day_index >= available_days:
+            unscheduled.append(task)
+            continue
+
+        planned_date = today + timedelta(days=day_index)
+
+        scheduled.append({
+            **task,
+            "planned_date": planned_date.isoformat(),
+            "position": position,
+        })
+
+        used_minutes += minutes
+        position += 1
+
+    return {
+        "items": scheduled,
+        "daily_minutes": daily_minutes,
+        "available_days": available_days,
+        "total_tasks": len(tasks),
+        "scheduled_tasks": len(scheduled),
+        "unscheduled_tasks": unscheduled,
+    }
 
 
 def utility_based_agent(topic_stats):
@@ -326,22 +449,35 @@ def _build_dfs_study_order(
 def goal_based_agent(
     topic_stats,
     exam_date,
-    syllabus_topics=None,
-    prerequisites=None,
+    hours_per_day=2,
 ):
     """
-    Builds a study schedule before the exam.
+    Builds a study plan using the student's daily time budget.
 
-    When syllabus_topics and prerequisites are supplied:
-      - DFS covers the entire syllabus branch.
-      - BFS puts prerequisites before dependent topics.
+    Tasks are scheduled according to:
+    - Topic utility score
+    - Daily available study minutes
+    - Exam date
 
-    Without those arguments, the original utility-based leaf ordering
-    is retained for backward compatibility.
+    Task types:
+    - review
+    - solve
+    - revisit_mistakes
     """
+
     if not exam_date:
         raise ValueError(
             "Set an exam date before generating a study plan."
+        )
+
+    if hours_per_day is None:
+        hours_per_day = 2
+
+    hours_per_day = float(hours_per_day)
+
+    if hours_per_day < 0.5 or hours_per_day > 12:
+        raise ValueError(
+            "Daily study time must be between 0.5 and 12 hours."
         )
 
     exam_day = date.fromisoformat(str(exam_date)[:10])
@@ -350,64 +486,128 @@ def goal_based_agent(
     if exam_day <= today:
         raise ValueError("Exam date must be in the future.")
 
-    if syllabus_topics:
-        ordered_topics = _build_dfs_study_order(
-            topic_stats=topic_stats,
-            syllabus_topics=syllabus_topics,
-            prerequisites=prerequisites or [],
-        )
-    else:
-        topics = []
-
-        for topic in topic_stats:
-            if not topic.get("is_leaf", True):
-                continue
-
-            item = dict(topic)
-            item["utility_score"] = calculate_utility(topic)
-            topics.append(item)
-
-        topics.sort(
-            key=lambda item: item["utility_score"],
-            reverse=True,
-        )
-
-        ordered_topics = [
-            {
-                "topic_id": item["topic_id"],
-                "topic_title": item["topic_title"],
-                "utility_score": item["utility_score"],
-                "ordering_reason": (
-                    "Ordered by utility score because no syllabus tree "
-                    "was supplied."
-                ),
-                "dfs_depth": 0,
-            }
-            for item in topics
-        ]
-
-    if not ordered_topics:
-        return []
-
+    daily_minutes = int(hours_per_day * 60)
     available_days = (exam_day - today).days
-    schedule = []
 
-    for index, topic in enumerate(ordered_topics):
-        study_day = today + timedelta(
-            days=min(index, available_days - 1)
-        )
+    # -------------------------------------------------
+    # 1. Select leaf topics and calculate priority.
+    # -------------------------------------------------
 
-        schedule.append({
-            "topic_id": topic["topic_id"],
-            "topic_title": topic["topic_title"],
-            "planned_date": study_day.isoformat(),
-            "position": index + 1,
-            "utility_score": topic["utility_score"],
-            "dfs_depth": topic["dfs_depth"],
+    topics = []
+
+    for topic in topic_stats:
+        if not topic.get("is_leaf", True):
+            continue
+
+        item = dict(topic)
+        item["utility_score"] = calculate_utility(topic)
+
+        topics.append(item)
+
+    topics.sort(
+        key=lambda item: item["utility_score"],
+        reverse=True
+    )
+
+    # -------------------------------------------------
+    # 2. Create study tasks for every selected topic.
+    # -------------------------------------------------
+
+    tasks = []
+
+    for topic in topics:
+        topic_id = topic["topic_id"]
+        topic_title = topic.get("topic_title", "Untitled topic")
+        utility_score = topic["utility_score"]
+
+        attempted = int(topic.get("attempted_questions") or 0)
+        correct = int(topic.get("correct_answers") or 0)
+
+        incorrect = max(0, attempted - correct)
+
+        # Review task.
+        tasks.append({
+            "topic_id": topic_id,
+            "topic_title": topic_title,
+            "task_type": "review",
+            "estimated_minutes": 20,
+            "utility_score": utility_score,
             "reason": (
-                f"Priority score: {topic['utility_score']}. "
-                f"{topic['ordering_reason']}"
+                f"Review this topic. Priority score: {utility_score}."
             ),
         })
 
-    return schedule
+        # Practice/solve task.
+        tasks.append({
+            "topic_id": topic_id,
+            "topic_title": topic_title,
+            "task_type": "solve",
+            "estimated_minutes": 30,
+            "utility_score": utility_score,
+            "reason": (
+                "Solve practice questions to check understanding."
+            ),
+        })
+
+        # Only create a mistake-revision task when mistakes exist.
+        if incorrect > 0:
+            tasks.append({
+                "topic_id": topic_id,
+                "topic_title": topic_title,
+                "task_type": "revisit_mistakes",
+                "estimated_minutes": 15,
+                "utility_score": utility_score,
+                "reason": (
+                    f"Revisit mistakes from {incorrect} incorrect answers."
+                ),
+            })
+
+    # -------------------------------------------------
+    # 3. Schedule tasks without exceeding daily hours.
+    # -------------------------------------------------
+
+    schedule = []
+    unscheduled_tasks = []
+
+    current_day = 0
+    minutes_used_today = 0
+    position = 1
+
+    for task in tasks:
+
+        task_minutes = task["estimated_minutes"]
+
+        # Move to the next day if this task does not fit.
+        if minutes_used_today + task_minutes > daily_minutes:
+            current_day += 1
+            minutes_used_today = 0
+
+        # Do not schedule tasks on or after exam day.
+        if current_day >= available_days:
+            unscheduled_tasks.append(task)
+            continue
+
+        planned_day = today + timedelta(days=current_day)
+
+        schedule.append({
+            "topic_id": task["topic_id"],
+            "topic_title": task["topic_title"],
+            "task_type": task["task_type"],
+            "estimated_minutes": task_minutes,
+            "planned_date": planned_day.isoformat(),
+            "position": position,
+            "utility_score": task["utility_score"],
+            "reason": task["reason"],
+        })
+
+        minutes_used_today += task_minutes
+        position += 1
+
+    return {
+        "items": schedule,
+        "daily_minutes": daily_minutes,
+        "available_days": available_days,
+        "total_tasks": len(tasks),
+        "scheduled_tasks": len(schedule),
+        "unscheduled_tasks": unscheduled_tasks,
+    }

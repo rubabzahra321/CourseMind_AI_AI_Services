@@ -22,6 +22,12 @@ class CompleteItemRequest(BaseModel):
     item_id: UUID
 
 
+class UpdatePlanItemRequest(BaseModel):
+    user_id: UUID
+    status: str
+    planned_date: str | None = None
+
+
 @router.post("/dashboard")
 def agent_dashboard(course_id: UUID, payload: UserRequest):
     return stage6_service.get_agent_dashboard(
@@ -93,3 +99,21 @@ def complete_study_item(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.patch("/study-plan/items/{item_id}")
+def update_study_plan_item(
+    course_id: UUID,
+    item_id: UUID,
+    payload: UpdatePlanItemRequest,
+):
+    try:
+        return stage6_service.update_study_plan_item(
+            payload.user_id,
+            course_id,
+            item_id,
+            payload.status,
+            payload.planned_date,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))

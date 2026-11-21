@@ -1,12 +1,14 @@
 
 from uuid import UUID
+from datetime import datetime, timezone, date
 
 from app.agents.stage6_agents import (
     simple_reflex_agent,
     model_based_reflex_agent,
     utility_based_agent,
-    goal_based_agent,
     calculate_utility,
+    _build_dfs_study_order,
+    schedule_revision_tasks,
 )
 
 from app.search.algorithms import (
@@ -137,20 +139,42 @@ def generate_study_plan(user_id: UUID, course_id: UUID):
     if not course.get("exam_date"):
         raise ValueError("Set an exam date for this course first.")
 
+    hours_per_day = float(course.get("hours_per_day") or 2)
+
+    # -------------------------------------------------
+    # 1. Get topic statistics and syllabus information.
+    # -------------------------------------------------
+
     stats = repo.get_topic_stats(user_id, course_id)
 
-    # Supply the actual syllabus tree and prerequisite graph.
-    syllabus_topics = repo.get_topics(user_id, course_id)
+    topics = repo.get_topics(user_id, course_id)
+
     prerequisites = repo.get_prerequisites(user_id, course_id)
 
-    schedule = goal_based_agent(
-        topic_stats=stats,
-        exam_date=course["exam_date"],
-        syllabus_topics=syllabus_topics,
-        prerequisites=prerequisites,
+    # -------------------------------------------------
+    # 2. Keep the Phase 5 BFS + DFS topic ordering.
+    # -------------------------------------------------
+
+    topic_schedule = _build_dfs_study_order(
+        stats,
+        topics,
+        prerequisites,
     )
 
-    # Do not archive an existing plan until a new valid schedule exists.
+    # -------------------------------------------------
+    # 3. Apply Phase 6 time-based revision scheduling.
+    # -------------------------------------------------
+
+    result = schedule_revision_tasks(
+        stats,
+        topic_schedule,
+        course["exam_date"],
+        hours_per_day,
+    )
+
+    schedule = result["items"]
+
+    # Do not archive the previous plan if generation failed.
     repo.archive_active_plans(user_id, course_id)
 
     plan = repo.create_study_plan(
@@ -158,15 +182,14 @@ def generate_study_plan(user_id: UUID, course_id: UUID):
         course_id,
         course["exam_date"],
         {
-            "goal": (
-                "Cover syllabus branches before the exam, "
-                "respecting prerequisite order."
-            ),
-            "topic_count": len(schedule),
-            "algorithm": (
-                "Goal-Based Agent using BFS prerequisites "
-                "and DFS syllabus coverage"
-            ),
+            "goal": "Complete revision tasks before the exam.",
+            "algorithm": "Time-Based Goal-Based Agent",
+            "hours_per_day": hours_per_day,
+            "daily_minutes": result["daily_minutes"],
+            "available_days": result["available_days"],
+            "total_tasks": result["total_tasks"],
+            "scheduled_tasks": result["scheduled_tasks"],
+            "unscheduled_tasks": len(result["unscheduled_tasks"]),
         },
     )
 
@@ -180,6 +203,8 @@ def generate_study_plan(user_id: UUID, course_id: UUID):
             "position": item["position"],
             "utility_score": item["utility_score"],
             "reason": item["reason"],
+            "task_type": item["task_type"],
+            "estimated_minutes": item["estimated_minutes"],
         }
         for item in schedule
     ]
@@ -189,11 +214,33 @@ def generate_study_plan(user_id: UUID, course_id: UUID):
     return {
         "plan": plan,
         "items": saved_items,
-        "algorithms": {
-            "priority": "Utility score",
-            "prerequisites": "Breadth-First Search",
-            "syllabus_coverage": "Depth-First Search",
+        "summary": {
+            "daily_minutes": result["daily_minutes"],
+            "available_days": result["available_days"],
+            "total_tasks": result["total_tasks"],
+            "scheduled_tasks": result["scheduled_tasks"],
+            "unscheduled_tasks": result["unscheduled_tasks"],
         },
+        "feasibility": {
+            "hours_per_day": hours_per_day,
+            "available_days": result["available_days"],
+            "daily_minutes": result["daily_minutes"],
+            "total_tasks": result["total_tasks"],
+            "scheduled_tasks": result["scheduled_tasks"],
+            "unscheduled_tasks": result["unscheduled_tasks"],
+            "is_feasible": len(result["unscheduled_tasks"]) == 0,
+            "warning": (
+                None
+                if len(result["unscheduled_tasks"]) == 0
+                else (
+                    f"{len(result['unscheduled_tasks'])} tasks "
+                    "could not be scheduled before the exam. "
+                    "Increase your daily study hours or revise "
+                    "your preparation priorities."
+                )
+            ),
+        },
+        "algorithm": "Time-Based Goal-Based Agent",
     }
 
 
@@ -226,3 +273,79 @@ def complete_study_plan_item(user_id, course_id, item_id):
         raise ValueError("Study plan item not found.")
 
     return result[0]
+
+
+def update_study_plan_item(
+    user_id,
+    course_id,
+    item_id,
+    status,
+    planned_date=None,
+):
+    allowed_statuses = {
+        "pending",
+        "done",
+        "skipped",
+        "rescheduled",
+    }
+
+    if status not in allowed_statuses:
+        raise ValueError("Invalid study task status.")
+
+    changes = {
+        "status": status,
+    }
+
+    if status == "done":
+        changes["is_done"] = True
+        changes["done_at"] = datetime.now(
+            timezone.utc
+        ).isoformat()
+
+    elif status == "skipped":
+        changes["is_done"] = False
+        changes["done_at"] = None
+        changes["skipped_at"] = datetime.now(
+            timezone.utc
+        ).isoformat()
+
+    elif status == "rescheduled":
+        if not planned_date:
+            raise ValueError(
+                "A new date is required when rescheduling a task."
+            )
+
+        try:
+            new_date = date.fromisoformat(planned_date)
+        except (TypeError, ValueError):
+            raise ValueError(
+                "Use a valid date in YYYY-MM-DD format."
+            )
+
+        if new_date < date.today():
+            raise ValueError(
+                "A task cannot be rescheduled to a past date."
+            )
+
+        changes["rescheduled_from"] = planned_date
+        changes["planned_date"] = planned_date
+        changes["is_done"] = False
+        changes["done_at"] = None
+        changes["skipped_at"] = None
+
+    else:
+        changes["is_done"] = False
+        changes["done_at"] = None
+        changes["skipped_at"] = None
+
+    result = repo.update_plan_item(
+        user_id,
+        course_id,
+        item_id,
+        changes,
+    )
+
+    if not result:
+        raise ValueError("Study plan item not found.")
+
+    return result[0] if isinstance(result, list) else result
