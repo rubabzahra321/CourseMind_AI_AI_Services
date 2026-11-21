@@ -20,7 +20,7 @@ from app.services import chunking, pdf_service
 from app.ai.gemini import embed_documents
 from app.ai.syllabus_extractor import extract_syllabus_topics
 from app.ai.past_paper_extractor import extract_past_paper_questions
-
+from app.repositories import notification_repository
 
 log = logging.getLogger("worker")
 

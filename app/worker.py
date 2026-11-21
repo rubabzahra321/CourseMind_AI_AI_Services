@@ -1,3 +1,4 @@
+
 import logging
 import os
 import signal
@@ -6,6 +7,7 @@ import time
 
 from app.core.config import settings
 from app.repositories import job_repository
+from app.repositories.health_repository import update_worker_heartbeat
 from app.services import processing_service
 
 log = logging.getLogger("worker")
@@ -27,13 +29,23 @@ def main() -> None:
 
     processing_service.recover_stale_jobs()
     last_sweep = time.monotonic()
+    last_heartbeat = 0
 
     while running:
+        if time.monotonic() - last_heartbeat >= 15:
+            try:
+                update_worker_heartbeat(worker_id)
+                last_heartbeat = time.monotonic()
+            except Exception:
+                log.exception("Could not update worker heartbeat")
+
         try:
             if time.monotonic() - last_sweep > 60:
                 processing_service.recover_stale_jobs()
                 last_sweep = time.monotonic()
+
             job = job_repository.claim_next(worker_id)
+
         except Exception:  # noqa: BLE001  (network blip, paused database...)
             log.exception("could not reach the database; retrying in 10s")
             time.sleep(10)
