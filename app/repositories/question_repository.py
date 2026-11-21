@@ -99,6 +99,23 @@ def save_generated_question(
     return question_id
 
 
+def delete_generated_questions(user_id, course_id, question_ids):
+    """Best-effort cleanup of questions saved by a failed generation.
+    Options are removed by ON DELETE CASCADE."""
+    if not question_ids:
+        return
+
+    (
+        get_db()
+        .table("generated_questions")
+        .delete()
+        .eq("user_id", user_id)
+        .eq("course_id", course_id)
+        .in_("id", [str(i) for i in question_ids])
+        .execute()
+    )
+
+
 def list_questions(user_id, course_id, topic_id=None, limit=20):
     query = (
         get_db()

@@ -106,6 +106,9 @@ def generate(course_id: UUID, body: GenerateRequest):
             ),
         )
 
+    except practice_service.IdempotencyConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

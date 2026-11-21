@@ -53,8 +53,11 @@ UNIQUE = {
         ("session_id", "question_id"),
         ("session_id", "question_order")
     ],
+    "ai_idempotency_requests": [
+        ("user_id", "course_id", "idempotency_key")
+    ],
     "study_plan_items": [
-        ("plan_id", "topic_id", "planned_date")
+        ("plan_id", "topic_id", "planned_date", "task_type")
     ],
     "question_options": [
         ("question_id", "option_order")

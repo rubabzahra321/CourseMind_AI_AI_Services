@@ -20,6 +20,9 @@ from app.repositories import (
 # IDEMPOTENCY HELPERS
 # =========================================================
 
+class IdempotencyConflict(ValueError):
+    """The same generation request is already being processed (HTTP 409)."""
+
 def _get_idempotency_request(user_id, course_id, idempotency_key):
     result = (
         get_db()
@@ -108,7 +111,7 @@ def generate_questions(
                 return existing["response"]
 
             if existing["status"] == "processing":
-                raise ValueError(
+                raise IdempotencyConflict(
                     "This question generation request is already processing"
                 )
 
@@ -120,12 +123,26 @@ def generate_questions(
             )
 
         else:
-            _create_idempotency_request(
-                user_id,
-                course_id,
-                idempotency_key,
-                request_hash,
-            )
+            try:
+                _create_idempotency_request(
+                    user_id,
+                    course_id,
+                    idempotency_key,
+                    request_hash,
+                )
+            except Exception:
+                # Two identical requests arrived together and the other one
+                # inserted the key first (unique violation). Treat it as
+                # "already processing" instead of crashing with a 500.
+                if _get_idempotency_request(
+                    user_id, course_id, idempotency_key
+                ):
+                    raise IdempotencyConflict(
+                        "This question generation request is already processing"
+                    )
+                raise
+
+    saved_ids = []
 
     try:
         topic = question_repository.get_topic(
@@ -190,8 +207,6 @@ def generate_questions(
             material=material,
         )
 
-        saved_ids = []
-
         for question in generated:
             question_id = question_repository.save_generated_question(
                 user_id=user_id,
@@ -230,6 +245,16 @@ def generate_questions(
         return response
 
     except Exception:
+        # Remove questions saved before the failure so a retry cannot
+        # leave duplicates behind (task 3: no duplicate questions).
+        if saved_ids:
+            try:
+                question_repository.delete_generated_questions(
+                    user_id, course_id, saved_ids
+                )
+            except Exception:
+                pass
+
         if idempotency_key:
             _update_idempotency_request(
                 user_id,

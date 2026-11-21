@@ -33,6 +33,18 @@ def stats(db, world):
             stats_row(T_UNIT, "Unit (parent)", is_leaf=False),
             # another user's data in the same table must never leak
             stats_row(new_id(), "Not mine", user_id=OTHER_USER, course_id=OTHER_COURSE, accuracy_percentage=0))
+    # Agents read topics from syllabus_topics and memory from topic_progress.
+    db.seed("syllabus_topics",
+            *[{"id": tid, "course_id": COURSE, "user_id": USER, "title": title, "position": pos}
+              for pos, (tid, title) in enumerate(
+                  ((T_WEAK, "Weak topic"), (T_NEW, "Unpractised topic"),
+                   (T_STRONG, "Strong topic"), (T_UNIT, "Unit (parent)")), start=1)])
+    db.seed("topic_progress",
+            {"topic_id": T_WEAK, "course_id": COURSE, "user_id": USER, "attempts": 5, "correct_answers": 1,
+             "accuracy_percentage": 20, "last_practised_at": old, "status": "Weak"},
+            {"topic_id": T_STRONG, "course_id": COURSE, "user_id": USER, "attempts": 10, "correct_answers": 9,
+             "accuracy_percentage": 90, "last_practised_at": date.today().isoformat() + "T08:00:00+00:00",
+             "status": "Strong"})
 
 
 def post(api, path, **body):
@@ -57,10 +69,12 @@ def test_dashboard_combines_all_four_agents(api, stats, db):
     assert order == [T_WEAK, T_NEW, T_STRONG] and T_UNIT not in order
 
 
-def test_dashboard_with_no_topics_is_empty_not_an_error(api, world):
+def test_dashboard_with_no_stats_is_empty_not_an_error(api, world):
     body = post(api, "/dashboard").json()
-    assert body == {"study_alerts": [], "topic_reminders": [], "recommended_next_action": None,
-                    "quick_revision_order": []}
+    assert body["study_alerts"] == [] and body["recommended_next_action"] is None
+    assert body["quick_revision_order"] == [] and body["model_memory_source"] == "topic_progress"
+    # the model-based agent still reminds about the one unpractised syllabus topic
+    assert [r["reason"] for r in body["topic_reminders"]] == ["no_practice_history"]
 
 
 def test_dashboard_never_includes_other_users_data(api, stats):
@@ -109,8 +123,18 @@ def test_generate_plan_schedules_topics_before_the_exam(api, db, stats):
     assert r.status_code == 200
     body = r.json()
     items = sorted(body["items"], key=lambda i: i["position"])
-    assert [i["topic_id"] for i in items] == [T_WEAK, T_NEW, T_STRONG]
-    assert body["plan"]["status"] == "active" and body["plan"]["summary"]["topic_count"] == 3
+
+    # Each topic now gets several task types (task 13.4); topics keep the utility order.
+    first_seen = list(dict.fromkeys(i["topic_id"] for i in items))
+    assert first_seen == [T_WEAK, T_NEW, T_STRONG]
+    assert {i["task_type"] for i in items} <= {"review", "solve", "revisit_mistakes"}
+    types = lambda tid: {i["task_type"] for i in items if i["topic_id"] == tid}
+    assert types(T_WEAK) == {"review", "solve", "revisit_mistakes"}
+    assert "revisit_mistakes" not in types(T_NEW)      # nothing answered yet -> no mistakes to revisit
+
+    assert body["plan"]["status"] == "active"
+    assert body["summary"]["total_tasks"] == len(items) == body["summary"]["scheduled_tasks"]
+    assert body["feasibility"]["is_feasible"] is True and body["feasibility"]["warning"] is None
     exam = date.today() + timedelta(days=30)
     assert all(date.fromisoformat(i["planned_date"]) < exam for i in items)
     assert all(i["user_id"] == USER and i["course_id"] == COURSE and i["is_done"] is False for i in items)
@@ -148,8 +172,8 @@ def test_current_plan_is_null_until_one_exists_then_returned(api, db, stats):
     assert post(api, "/study-plan/current").json() is None
     post(api, "/study-plan/generate")
     body = post(api, "/study-plan/current").json()
-    assert body["plan"]["status"] == "active" and len(body["items"]) == 3
-    assert [i["position"] for i in body["items"]] == [1, 2, 3]
+    assert body["plan"]["status"] == "active" and len(body["items"]) == 8
+    assert [i["position"] for i in body["items"]] == list(range(1, 9))
 
 
 def test_complete_item_marks_done_and_stamps_time(api, db, stats):
@@ -166,44 +190,6 @@ def test_complete_unknown_item_is_404_and_foreign_item_untouched(api, db, stats)
     assert post(api, "/study-plan/complete", item_id=theirs["id"]).status_code == 404
     assert db.rows("study_plan_items", id=theirs["id"])[0]["is_done"] is False
 def test_model_based_agent_reads_topic_progress_memory(api, db, stats):
-    old_date = (
-        date.today() - timedelta(days=10)
-    ).isoformat() + "T09:00:00+00:00"
-
-    # The model-based agent needs the actual syllabus topic rows.
-    db.seed(
-        "syllabus_topics",
-        {
-            "id": T_WEAK,
-            "course_id": COURSE,
-            "user_id": USER,
-            "title": "Weak topic",
-            "position": 1,
-        },
-        {
-            "id": T_NEW,
-            "course_id": COURSE,
-            "user_id": USER,
-            "title": "Unpractised topic",
-            "position": 2,
-        },
-    )
-
-    # Its stored memory comes from topic_progress.
-    db.seed(
-        "topic_progress",
-        {
-            "topic_id": T_WEAK,
-            "course_id": COURSE,
-            "user_id": USER,
-            "attempts": 5,
-            "correct_answers": 1,
-            "accuracy_percentage": 20,
-            "last_practised_at": old_date,
-            "status": "Weak",
-        },
-    )
-
     body = post(api, "/dashboard").json()
 
     reminders = {

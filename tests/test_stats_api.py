@@ -32,5 +32,9 @@ def test_topic_stats_is_scoped_to_user_and_course(api, db, world):
 
 
 def test_topic_stats_empty_course(api, world):
-    assert api.get(f"/internal/courses/{COURSE}/topic-stats", params={"user_id": USER}).json() == \
-        {"course_has_frequency_data": False, "topics": []}
+    body = api.get(f"/internal/courses/{COURSE}/topic-stats", params={"user_id": USER}).json()
+    assert body["course_has_frequency_data"] is False and body["topics"] == []
+    # Task 6.2: a real data-sufficiency warning replaces the old boolean-only answer.
+    assert body["data_sufficiency"]["sufficient"] is False
+    assert body["data_sufficiency"]["ready_papers"] == 0
+    assert body["data_sufficiency"]["warning"]
