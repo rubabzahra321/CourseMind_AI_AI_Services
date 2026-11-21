@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from app.api import practice_branch
 
 from app.api import (
     health,
@@ -21,3 +22,4 @@ app.include_router(practice.router)
 app.include_router(practice_formats.router)
 app.include_router(agents.router)
 app.include_router(quiz_duel.router)
+app.include_router(practice_branch.router)

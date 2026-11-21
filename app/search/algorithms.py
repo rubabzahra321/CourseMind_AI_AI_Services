@@ -40,7 +40,78 @@ def bfs_prerequisites(target_topic_id, prerequisites):
             queue.append((prerequisite, new_path))
 
     return [target_topic_id]
+def bfs_all_prerequisites(target_topic_id, prerequisites):
+    """
+    Return all reachable prerequisites before the target topic.
 
+    Each row means:
+        topic_id requires prerequisite_topic_id
+
+    BFS first collects all reachable topics. A second queue-based
+    topological ordering ensures prerequisites appear before topics
+    that depend on them.
+
+    The target topic is included as the final item.
+    """
+    prerequisite_graph = {}
+
+    for edge in prerequisites:
+        prerequisite_graph.setdefault(
+            str(edge["topic_id"]), []
+        ).append(str(edge["prerequisite_topic_id"]))
+
+    # Step 1: BFS to collect every reachable prerequisite.
+    queue = deque([str(target_topic_id)])
+    reachable = {str(target_topic_id)}
+
+    while queue:
+        current = queue.popleft()
+
+        for prerequisite_id in prerequisite_graph.get(current, []):
+            if prerequisite_id not in reachable:
+                reachable.add(prerequisite_id)
+                queue.append(prerequisite_id)
+
+    # Step 2: Reverse the edges:
+    # prerequisite -> topics that depend on it.
+    dependents = {topic_id: [] for topic_id in reachable}
+    indegree = {topic_id: 0 for topic_id in reachable}
+
+    for topic_id in reachable:
+        for prerequisite_id in prerequisite_graph.get(topic_id, []):
+            if prerequisite_id not in reachable:
+                continue
+
+            dependents[prerequisite_id].append(topic_id)
+            indegree[topic_id] += 1
+
+    # Step 3: Queue topics that have no prerequisites.
+    ready = deque(
+        topic_id
+        for topic_id in reachable
+        if indegree[topic_id] == 0
+    )
+
+    ordered = []
+
+    while ready:
+        current = ready.popleft()
+        ordered.append(current)
+
+        for dependent_id in dependents[current]:
+            indegree[dependent_id] -= 1
+
+            if indegree[dependent_id] == 0:
+                ready.append(dependent_id)
+
+    # A cycle means no valid prerequisite-first order exists.
+    if len(ordered) != len(reachable):
+        raise ValueError(
+            "A cycle was found in the prerequisite graph. "
+            "Correct the prerequisite relationships before generating a plan."
+        )
+
+    return ordered
 
 def dfs_topic_subtree(root_topic_id, topics):
     """

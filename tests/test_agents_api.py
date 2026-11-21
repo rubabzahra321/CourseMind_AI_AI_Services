@@ -165,3 +165,56 @@ def test_complete_unknown_item_is_404_and_foreign_item_untouched(api, db, stats)
                                           "topic_id": new_id(), "reason": "x", "planned_date": "2030-01-01"})
     assert post(api, "/study-plan/complete", item_id=theirs["id"]).status_code == 404
     assert db.rows("study_plan_items", id=theirs["id"])[0]["is_done"] is False
+def test_model_based_agent_reads_topic_progress_memory(api, db, stats):
+    old_date = (
+        date.today() - timedelta(days=10)
+    ).isoformat() + "T09:00:00+00:00"
+
+    # The model-based agent needs the actual syllabus topic rows.
+    db.seed(
+        "syllabus_topics",
+        {
+            "id": T_WEAK,
+            "course_id": COURSE,
+            "user_id": USER,
+            "title": "Weak topic",
+            "position": 1,
+        },
+        {
+            "id": T_NEW,
+            "course_id": COURSE,
+            "user_id": USER,
+            "title": "Unpractised topic",
+            "position": 2,
+        },
+    )
+
+    # Its stored memory comes from topic_progress.
+    db.seed(
+        "topic_progress",
+        {
+            "topic_id": T_WEAK,
+            "course_id": COURSE,
+            "user_id": USER,
+            "attempts": 5,
+            "correct_answers": 1,
+            "accuracy_percentage": 20,
+            "last_practised_at": old_date,
+            "status": "Weak",
+        },
+    )
+
+    body = post(api, "/dashboard").json()
+
+    reminders = {
+        item["topic_id"]: item
+        for item in body["topic_reminders"]
+    }
+
+    assert reminders[T_WEAK]["reason"] == "inactive_topic"
+    assert reminders[T_WEAK]["attempts"] == 5
+
+    # A topic without a topic_progress row is treated as unpractised.
+    assert reminders[T_NEW]["reason"] == "no_practice_history"
+
+    assert body["model_memory_source"] == "topic_progress"

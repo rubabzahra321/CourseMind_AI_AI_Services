@@ -1,3 +1,4 @@
+
 from app.core.config import settings
 from app.db.client import get_db
 from app.db.helpers import data_of
@@ -325,6 +326,14 @@ def submit_answer(
     )
 
     attempt = attempt_result.data
+
+    # Refresh topic progress after the attempt is inserted.
+    if question.get("topic_id"):
+        practice_repository.refresh_topic_progress(
+            user_id,
+            course_id,
+            question["topic_id"],
+        )
 
     attempts = practice_repository.get_session_attempts(
         session_id,
