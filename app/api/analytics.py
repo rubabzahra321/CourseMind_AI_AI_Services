@@ -1,11 +1,11 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.core.security import require_internal_key
-from app.services import analytics_service
+from app.services import analytics_service, insights_service
 
 
 router = APIRouter(
@@ -168,3 +168,51 @@ def course_gaps(
         user_id,
         course_id
     )
+
+
+# K-03: paper insights (frequency and marks, only when reliable).
+@router.get(
+    "/courses/{course_id}/paper-insights"
+)
+def paper_insights(
+    course_id: UUID,
+    user_id: UUID
+):
+    return insights_service.get_paper_insights(
+        user_id,
+        course_id
+    )
+
+
+# S-01: syllabus-to-exam knowledge map.
+@router.get(
+    "/courses/{course_id}/knowledge-map"
+)
+def knowledge_map(
+    course_id: UUID,
+    user_id: UUID
+):
+    return insights_service.get_knowledge_map(
+        user_id,
+        course_id
+    )
+
+
+@router.get(
+    "/courses/{course_id}/knowledge-map/topics/{topic_id}"
+)
+def topic_knowledge(
+    course_id: UUID,
+    topic_id: UUID,
+    user_id: UUID,
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    try:
+        return insights_service.get_topic_knowledge(
+            user_id,
+            course_id,
+            topic_id,
+            limit
+        )
+    except ValueError as exc:
+        _handle_value_error(exc)

@@ -114,6 +114,7 @@ class Query:
         self.orders = []
 
         self.max_rows = None
+        self.row_range = None
         self.cols = "*"
 
         self.mode = None
@@ -179,6 +180,12 @@ class Query:
 
     def limit(self, n):
         self.max_rows = n
+        return self
+
+
+    def range(self, start, end):
+        # PostgREST style: inclusive start..end
+        self.row_range = (start, end)
         return self
 
 
@@ -382,6 +389,10 @@ class Query:
                 ),
                 reverse=desc
             )
+
+        if self.row_range is not None:
+            start, end = self.row_range
+            matched = matched[start:end + 1]
 
         if self.max_rows is not None:
             matched = matched[:self.max_rows]

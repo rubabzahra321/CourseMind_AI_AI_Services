@@ -1,4 +1,6 @@
 
+import re
+
 from app.core.config import settings
 
 from app.ai.gemini import (
@@ -19,6 +21,114 @@ INSUFFICIENT_ANSWER = (
 )
 
 STRONG_SIMILARITY_THRESHOLD = 0.70
+
+# F-05: examples the model writes itself are NOT course material. Gemini is
+# told to wrap them in these markers so we can label them clearly.
+AI_EXAMPLE_OPEN = "[[AI-EXAMPLE]]"
+AI_EXAMPLE_CLOSE = "[[/AI-EXAMPLE]]"
+AI_EXAMPLE_LABEL = (
+    "Example added by CourseMind AI (not from your course material)"
+)
+
+_AI_EXAMPLE_PATTERN = re.compile(
+    r"\[\[AI-EXAMPLE\]\](.*?)(?:\[\[/AI-EXAMPLE\]\]|\Z)",
+    re.DOTALL,
+)
+
+
+def _has_example_markers(text):
+    return "[[AI-EXAMPLE]]" in text or "[[/AI-EXAMPLE]]" in text
+
+
+def _label_ai_examples(answer):
+    """
+    Replace marked, model-written examples with a visible label.
+
+    Returns (labelled_answer, examples). Answers without markers are
+    returned unchanged.
+    """
+
+    if not _has_example_markers(answer):
+        return answer, []
+
+    examples = []
+
+    def replace(match):
+        text = match.group(1).strip()
+
+        if not text:
+            return ""
+
+        examples.append(text)
+
+        quoted = "\n".join(
+            f"> {line}" if line.strip() else ">"
+            for line in text.splitlines()
+        )
+
+        return f"\n\n> **{AI_EXAMPLE_LABEL}:**\n{quoted}\n\n"
+
+    labelled = _AI_EXAMPLE_PATTERN.sub(replace, answer)
+
+    # Remove any stray marker the model left behind.
+    labelled = labelled.replace(AI_EXAMPLE_OPEN, "")
+    labelled = labelled.replace(AI_EXAMPLE_CLOSE, "")
+    labelled = re.sub(r"\n{3,}", "\n\n", labelled).strip()
+
+    return labelled, examples
+
+
+def _without_ai_examples(answer):
+    """The answer with model-written examples removed (for evidence checks)."""
+
+    if not _has_example_markers(answer):
+        return answer
+
+    stripped = _AI_EXAMPLE_PATTERN.sub("", answer)
+
+    return stripped.replace(AI_EXAMPLE_CLOSE, "")
+
+
+def _get_style_instructions(simplify, include_examples):
+    """
+    Extra instructions for simple language (F-05) and examples (F-05).
+    """
+
+    parts = []
+
+    if simplify:
+        parts.append("""
+SIMPLE LANGUAGE MODE.
+
+Explain as if to a first-year student who is new to the subject.
+Use short sentences and everyday words.
+Define each technical term the first time it appears.
+Simplifying must not change the meaning and must not add facts that
+are missing from the sources. Keep the source citations.
+""")
+
+    if include_examples:
+        parts.append(f"""
+EXAMPLES (these rules take priority over any example guidance above).
+
+If an example would help the student understand:
+- If the sources contain an example, use it and cite it like any fact.
+- If they do not, you MAY write ONE short example of your own.
+  You MUST wrap it exactly like this:
+  {AI_EXAMPLE_OPEN} your example here {AI_EXAMPLE_CLOSE}
+- An example you write yourself must NOT have a source citation, must
+  NOT be presented as coming from the course material, and must agree
+  with the facts in the sources.
+- Never put facts that are missing from the sources outside these markers.
+""")
+
+    else:
+        parts.append(f"""
+Do not add examples that are not in the sources.
+Never use the {AI_EXAMPLE_OPEN} markers.
+""")
+
+    return "\n".join(parts)
 
 
 def _get_depth_instruction(depth):
@@ -58,7 +168,14 @@ Include source citations for factual claims.
 """
 
 
-def _build_prompt(question, history, sources, depth="detailed"):
+def _build_prompt(
+    question,
+    history,
+    sources,
+    depth="detailed",
+    simplify=False,
+    include_examples=False,
+):
     """
     Build a prompt using retrieved course material
     and previous conversation context.
@@ -87,6 +204,11 @@ Content:
 
     depth_instruction = _get_depth_instruction(depth)
 
+    style_instructions = _get_style_instructions(
+        simplify,
+        include_examples,
+    )
+
     return f"""
 You are CourseMind AI, a university study assistant.
 
@@ -105,6 +227,7 @@ Rules:
    clearly explain which part is not covered.
 
 {depth_instruction}
+{style_instructions}
 
 Previous conversation:
 {conversation}
@@ -160,6 +283,8 @@ def answer_question(
     question: str,
     session_id=None,
     depth="detailed",
+    simplify=False,
+    include_examples=False,
 ):
     """
     Main RAG chat function.
@@ -234,6 +359,10 @@ def answer_question(
             "session_id": session_id,
             "answer": answer,
             "depth": depth,
+            "simplified": simplify,
+            "include_examples": include_examples,
+            "contains_ai_examples": False,
+            "ai_examples": [],
             "evidence_strength": "insufficient",
             "insufficient_evidence": True,
             "sources": [],
@@ -255,15 +384,22 @@ def answer_question(
         history,
         sources,
         depth,
+        simplify,
+        include_examples,
     )
 
-    answer = generate_answer(prompt)
+    raw_answer = generate_answer(prompt)
 
-    # 10. Estimate evidence strength.
+    # 10. Estimate evidence strength from the part of the answer that is
+    # based on the sources: model-written examples are not evidence.
     evidence_strength = _calculate_evidence_strength(
         sources,
-        answer,
+        _without_ai_examples(raw_answer),
     )
+
+    # Label examples the model wrote itself so they are never mistaken
+    # for course material (the label is stored with the answer).
+    answer, ai_examples = _label_ai_examples(raw_answer)
 
     # 11. Save assistant response.
     message = chat_repository.save_message(
@@ -289,6 +425,10 @@ def answer_question(
         "session_id": session_id,
         "answer": answer,
         "depth": depth,
+        "simplified": simplify,
+        "include_examples": include_examples,
+        "contains_ai_examples": bool(ai_examples),
+        "ai_examples": ai_examples,
         "evidence_strength": evidence_strength,
         "insufficient_evidence": False,
         "message_id": message["id"],
