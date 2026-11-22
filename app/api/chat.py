@@ -1,218 +1,104 @@
+"""Chat (RAG) endpoints.
 
+The Node backend calls these:
+    POST /internal/courses/{course_id}/chat
+    GET  /internal/courses/{course_id}/chat/sessions
+    GET  /internal/courses/{course_id}/chat/sessions/{session_id}
+"""
+
+import logging
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.core.security import require_internal_key
-from app.services import analytics_service, insights_service
+from app.repositories import chat_repository
+from app.services import rag_service
 
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/internal",
-    dependencies=[Depends(require_internal_key)]
+    dependencies=[Depends(require_internal_key)],
 )
 
 
-def _handle_value_error(exc):
-    raise HTTPException(
-        status_code=400,
-        detail=str(exc)
-    ) from exc
-
-
-class PriorityWeightsBody(BaseModel):
-    frequency: float = Field(ge=0, le=1)
-    marks: float = Field(ge=0, le=1)
-    syllabus_weight: float = Field(ge=0, le=1)
-    mastery: float = Field(ge=0, le=1)
-
-
-class MaterialLinkBody(BaseModel):
-    chunk_id: UUID
-    method: str = Field(default="manual", pattern="^(manual|ai)$")
-    similarity: float | None = Field(default=None, ge=0, le=1)
-
-
-@router.get(
-    "/courses/{course_id}/topics/{topic_id}/evidence"
-)
-def topic_evidence(
-    course_id: UUID,
-    topic_id: UUID,
+class ChatRequest(BaseModel):
     user_id: UUID
-):
+    question: str = Field(min_length=3, max_length=4000)
+    session_id: UUID | None = None
+    depth: Literal["short", "detailed", "step_by_step"] = "detailed"
+    simplify: bool = False
+    include_examples: bool = False
+
+
+# ==========================================
+# Ask a question
+# ==========================================
+
+@router.post("/courses/{course_id}/chat")
+def chat(course_id: UUID, body: ChatRequest):
     try:
-        return analytics_service.get_topic_evidence(
-            user_id,
-            course_id,
-            topic_id
+        return rag_service.answer_question(
+            user_id=str(body.user_id),
+            course_id=str(course_id),
+            question=body.question,
+            session_id=str(body.session_id) if body.session_id else None,
+            depth=body.depth,
+            simplify=body.simplify,
+            include_examples=body.include_examples,
         )
+
     except ValueError as exc:
-        _handle_value_error(exc)
+        # e.g. "Chat session not found" (unknown, foreign or other-course session)
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-
-@router.get(
-    "/courses/{course_id}/priority"
-)
-def topic_priorities(
-    course_id: UUID,
-    user_id: UUID
-):
-    return analytics_service.get_topic_priorities(
-        user_id,
-        course_id
-    )
-
-
-@router.get(
-    "/courses/{course_id}/priority/weights"
-)
-def read_priority_weights(
-    course_id: UUID,
-    user_id: UUID
-):
-    return analytics_service.get_priority_weights(
-        user_id,
-        course_id
-    )
-
-
-@router.put(
-    "/courses/{course_id}/priority/weights"
-)
-def change_priority_weights(
-    course_id: UUID,
-    user_id: UUID,
-    body: PriorityWeightsBody
-):
-    try:
-        return analytics_service.update_priority_weights(
-            user_id,
-            course_id,
-            body.model_dump()
-        )
-    except ValueError as exc:
-        _handle_value_error(exc)
-
-
-@router.get(
-    "/courses/{course_id}/topics/{topic_id}/material/suggestions"
-)
-def material_suggestions(
-    course_id: UUID,
-    topic_id: UUID,
-    user_id: UUID,
-    limit: int = 10
-):
-    if limit < 1 or limit > 50:
+    except Exception as exc:  # noqa: BLE001 - never leak provider/DB details
+        logger.exception("Chat processing failed")
         raise HTTPException(
-            status_code=400,
-            detail="limit must be between 1 and 50"
-        )
-
-    try:
-        return analytics_service.suggest_topic_chunks(
-            user_id,
-            course_id,
-            topic_id,
-            limit
-        )
-    except ValueError as exc:
-        _handle_value_error(exc)
+            status_code=500,
+            detail="AI chat processing failed",
+        ) from exc
 
 
-@router.post(
-    "/courses/{course_id}/topics/{topic_id}/material"
-)
-def create_material_link(
+# ==========================================
+# Chat history
+# ==========================================
+
+@router.get("/courses/{course_id}/chat/sessions")
+def list_chat_sessions(
     course_id: UUID,
-    topic_id: UUID,
     user_id: UUID,
-    body: MaterialLinkBody
+    limit: int = Query(default=30, ge=1, le=100),
 ):
-    try:
-        return analytics_service.create_topic_chunk_link(
-            user_id=user_id,
-            course_id=course_id,
-            topic_id=topic_id,
-            chunk_id=body.chunk_id,
-            method=body.method,
-            similarity=body.similarity
-        )
-    except ValueError as exc:
-        _handle_value_error(exc)
-
-
-@router.get(
-    "/courses/{course_id}/coverage"
-)
-def topic_coverage(
-    course_id: UUID,
-    user_id: UUID
-):
-    return analytics_service.get_topic_coverage(
-        user_id,
-        course_id
+    return chat_repository.list_sessions(
+        str(user_id),
+        str(course_id),
+        limit,
     )
 
 
-@router.get(
-    "/courses/{course_id}/gaps"
-)
-def course_gaps(
+@router.get("/courses/{course_id}/chat/sessions/{session_id}")
+def get_chat_session(
     course_id: UUID,
-    user_id: UUID
-):
-    return analytics_service.detect_course_gaps(
-        user_id,
-        course_id
-    )
-
-
-# K-03: paper insights (frequency and marks, only when reliable).
-@router.get(
-    "/courses/{course_id}/paper-insights"
-)
-def paper_insights(
-    course_id: UUID,
-    user_id: UUID
-):
-    return insights_service.get_paper_insights(
-        user_id,
-        course_id
-    )
-
-
-# S-01: syllabus-to-exam knowledge map.
-@router.get(
-    "/courses/{course_id}/knowledge-map"
-)
-def knowledge_map(
-    course_id: UUID,
-    user_id: UUID
-):
-    return insights_service.get_knowledge_map(
-        user_id,
-        course_id
-    )
-
-
-@router.get(
-    "/courses/{course_id}/knowledge-map/topics/{topic_id}"
-)
-def topic_knowledge(
-    course_id: UUID,
-    topic_id: UUID,
+    session_id: UUID,
     user_id: UUID,
-    limit: int = Query(default=20, ge=1, le=100),
 ):
-    try:
-        return insights_service.get_topic_knowledge(
-            user_id,
-            course_id,
-            topic_id,
-            limit
-        )
-    except ValueError as exc:
-        _handle_value_error(exc)
+    session = chat_repository.get_session(
+        str(session_id),
+        str(user_id),
+        str(course_id),
+    )
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+
+    return {
+        "session": session,
+        "messages": chat_repository.get_session_messages(
+            str(session_id),
+            str(user_id),
+        ),
+    }

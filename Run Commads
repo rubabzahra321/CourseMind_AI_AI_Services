@@ -1,0 +1,12 @@
+cd "D:\FSD project\CourseMind_AI_AI_Services-main"
+.\venv\Scripts\Activate.ps1
+uvicorn app.main:app --reload
+
+Run the background worker
+Your project also contains a background processing worker for document-processing jobs.
+
+Open a second VS Code terminal in the sam
+
+cd "D:\FSD project\CourseMind_AI_AI_Services-main"
+.\venv\Scripts\Activate.ps1
+python -m app.worker
