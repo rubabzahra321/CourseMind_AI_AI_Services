@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     # Analytics - Gap Detection
     often_examined_frequency_percentage: float = 50.0
 
+    # Machine learning - topic classifier
+    ml_random_seed: int = 42                    # repeatable results
+    ml_cv_max_folds: int = 5                    # cross-validation folds
+    ml_min_examples_per_topic: int = 2          # topics below this are left out of training
+    ml_min_topics: int = 2                      # need at least this many topics to train
+    ml_min_question_samples_for_selection: int = 10   # below this, pick the model on all samples
+    ml_min_confidence: float = 0.50             # below this a suggestion needs review
+    ml_max_classify_questions: int = 200
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore",

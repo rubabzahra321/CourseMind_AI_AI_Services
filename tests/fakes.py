@@ -53,6 +53,9 @@ UNIQUE = {
         ("session_id", "question_id"),
         ("session_id", "question_order")
     ],
+    "ml_models": [
+        ("user_id", "course_id", "model_type", "version")
+    ],
     "ai_idempotency_requests": [
         ("user_id", "course_id", "idempotency_key")
     ],

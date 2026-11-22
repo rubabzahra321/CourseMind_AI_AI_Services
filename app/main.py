@@ -10,6 +10,7 @@ from app.api import (
     practice,
     practice_formats,
     analytics,
+    ml,
 )
 
 
@@ -25,3 +26,4 @@ app.include_router(agents.router)
 app.include_router(quiz_duel.router)
 app.include_router(practice_branch.router)
 app.include_router(analytics.router)
+app.include_router(ml.router)
