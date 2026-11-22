@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     ml_min_confidence: float = 0.50             # below this a suggestion needs review
     ml_max_classify_questions: int = 200
 
+    # Machine learning - difficulty model
+    ml_difficulty_min_samples: int = 20         # questions needed to train
+    ml_difficulty_min_per_class: int = 3        # each difficulty level needs this many
+    ml_difficulty_min_attempts: int = 3         # attempts before observed results replace Gemini's label
+    ml_difficulty_easy_max_wrong: float = 0.30  # wrong-answer rate below this = easy
+    ml_difficulty_hard_min_wrong: float = 0.60  # wrong-answer rate above this = hard
+    ml_difficulty_ensemble_size: int = 100      # trees in the Random Forest and rounds in Gradient Boosting
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore",

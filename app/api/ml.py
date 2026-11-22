@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.security import require_internal_key
-from app.services import ml_service
+from app.services import difficulty_service, ml_service
 
 
 router = APIRouter(
@@ -59,6 +59,56 @@ def ml_status(course_id: UUID, user_id: UUID):
 @router.post("/courses/{course_id}/ml/classify-questions")
 def classify_questions(course_id: UUID, body: ClassifyBody):
     return ml_service.classify_questions(
+        body.user_id,
+        course_id,
+        question_ids=body.question_ids,
+        save=body.save,
+        min_confidence=body.min_confidence,
+        limit=body.limit,
+    )
+
+
+# ---------------------------------------------------------------- difficulty
+class DifficultyTrainBody(BaseModel):
+    user_id: UUID
+
+    # Activate the new version even if it scores lower than the current one.
+    force: bool = False
+
+
+class DifficultyPredictBody(BaseModel):
+    user_id: UUID
+
+    # Specific past-paper questions; by default those without a prediction.
+    question_ids: Optional[list[UUID]] = Field(default=None, max_length=200)
+
+    # Save confident predictions on the questions.
+    save: bool = False
+
+    min_confidence: Optional[float] = Field(default=None, ge=0, le=1)
+    limit: Optional[int] = Field(default=None, ge=1, le=200)
+
+
+@router.post("/courses/{course_id}/ml/difficulty/train")
+def train_difficulty(course_id: UUID, body: DifficultyTrainBody):
+    try:
+        return difficulty_service.train_difficulty_model(
+            body.user_id,
+            course_id,
+            force=body.force,
+        )
+    except ml_service.InsufficientTrainingData as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/courses/{course_id}/ml/difficulty/status")
+def difficulty_status(course_id: UUID, user_id: UUID):
+    return difficulty_service.get_status(user_id, course_id)
+
+
+@router.post("/courses/{course_id}/ml/difficulty/predict")
+def predict_difficulty(course_id: UUID, body: DifficultyPredictBody):
+    return difficulty_service.predict_difficulty(
         body.user_id,
         course_id,
         question_ids=body.question_ids,
