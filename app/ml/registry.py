@@ -49,6 +49,9 @@ def set_artifact_store(store):
 
 
 def artifact_path(user_id, course_id, model_type, version):
+    if user_id is None:                         # global (pooled) model
+        return f"ml-models/global/{model_type}_v{version}.joblib"
+
     return f"ml-models/{user_id}/{course_id}/{model_type}_v{version}.joblib"
 
 
@@ -69,8 +72,8 @@ def save_version(user_id, course_id, model_type, algorithm,
     _store.put(path, _serialise(bundle))
 
     return ml_repository.insert_model({
-        "user_id": str(user_id),
-        "course_id": str(course_id),
+        "user_id": str(user_id) if user_id is not None else None,
+        "course_id": str(course_id) if course_id is not None else None,
         "model_type": model_type,
         "algorithm": algorithm,
         "version": version,

@@ -171,6 +171,12 @@ class Query:
         return self
 
 
+    def is_(self, col, val):
+        # PostgREST style: .is_("col", "null") means "col IS NULL"
+        self.filters.append((col, "is", val))
+        return self
+
+
     def in_(self, col, vals):
         self.filters.append((col, "in", vals))
         return self
@@ -216,6 +222,9 @@ class Query:
             if op == "lt" and not (
                 cur is not None and str(cur) < str(val)
             ):
+                return False
+
+            if op == "is" and val == "null" and cur is not None:
                 return False
 
             if op == "in" and str(cur) not in {

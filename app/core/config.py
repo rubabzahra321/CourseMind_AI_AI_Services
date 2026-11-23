@@ -68,6 +68,17 @@ class Settings(BaseSettings):
     ml_difficulty_hard_min_wrong: float = 0.60  # wrong-answer rate above this = hard
     ml_difficulty_ensemble_size: int = 100      # trees in the Random Forest and rounds in Gradient Boosting
 
+    # Machine learning - performance model (pooled across students)
+    ml_performance_min_history: int = 2         # earlier attempts needed before an attempt becomes a training example
+    ml_performance_min_samples: int = 150       # training examples needed overall
+    ml_performance_min_test: int = 30           # examples needed in the later (test) period
+    ml_performance_test_fraction: float = 0.30  # the latest 30% of attempts are the test period
+    ml_performance_ensemble_size: int = 100     # boosting rounds
+    ml_performance_ewma_alpha: float = 0.30     # weight of the newest attempt in the moving average
+    ml_performance_trend_window: int = 10       # attempts used for the trend
+    ml_performance_trend_min_attempts: int = 5  # attempts needed before a trend is reported
+    ml_performance_trend_threshold: float = 0.03   # slope per attempt that counts as improving / declining
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore",

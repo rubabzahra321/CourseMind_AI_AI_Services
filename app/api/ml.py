@@ -1,11 +1,11 @@
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.security import require_internal_key
-from app.services import difficulty_service, ml_service
+from app.services import difficulty_service, ml_service, performance_service
 
 
 router = APIRouter(
@@ -116,3 +116,33 @@ def predict_difficulty(course_id: UUID, body: DifficultyPredictBody):
         min_confidence=body.min_confidence,
         limit=body.limit,
     )
+
+
+# ---------------------------------------------------------------- performance
+class PerformanceTrainBody(BaseModel):
+    # Activate the new version even if it scores lower than the current one.
+    force: bool = False
+
+
+@router.post("/ml/performance/train")
+def train_performance(body: PerformanceTrainBody):
+    # Trains ONE global model from every student's pooled, anonymised answers.
+    try:
+        return performance_service.train_performance_model(force=body.force)
+    except ml_service.InsufficientTrainingData as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/ml/performance/status")
+def performance_status():
+    return performance_service.get_status()
+
+
+@router.get("/courses/{course_id}/ml/readiness")
+def readiness(
+    course_id: UUID,
+    user_id: UUID,
+    difficulty: Literal["easy", "medium", "hard"] = "medium",
+):
+    return performance_service.student_readiness(
+        user_id, course_id, difficulty)
