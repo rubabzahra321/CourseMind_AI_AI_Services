@@ -20,14 +20,68 @@ from app.search.algorithms import (
 from app.repositories import stage6_repository as repo
 
 
+def _attach_performance_readiness(user_id, course_id, rows):
+    """Add learned readiness/trend when a global performance model is active."""
+    from app.repositories import ml_repository
+    from app.services import performance_service
+
+    if not ml_repository.get_global_active("performance"):
+        return rows
+
+    payload = performance_service.get_topic_readiness(user_id, course_id)
+    if payload.get("model_used") != "performance":
+        return rows
+
+    by_topic = {
+        str(item["topic_id"]): item
+        for item in payload.get("topics", [])
+    }
+    enriched = []
+    for item in rows:
+        result = dict(item)
+        readiness = by_topic.get(str(item.get("topic_id")), {})
+        result["readiness"] = readiness.get("readiness")
+        result["trend"] = readiness.get("trend")
+        result["performance_model_version"] = payload.get("model_version")
+        enriched.append(result)
+    return enriched
+
+
+def _attach_learning_patterns(user_id, course_id, rows):
+    """Attach global cluster labels to topic memory when a patterns model exists."""
+    from app.repositories import ml_repository
+    from app.services import pattern_analysis_service
+
+    if not ml_repository.get_global_active("patterns"):
+        return rows, None
+    payload = pattern_analysis_service.get_learning_patterns(user_id, course_id)
+    by_topic = {str(item["topic_id"]): item for item in payload.get("topics", [])}
+    enriched = []
+    for item in rows:
+        result = dict(item)
+        pattern = by_topic.get(str(item.get("topic_id")))
+        if pattern:
+            result["learning_pattern"] = pattern.get("pattern")
+            result["learning_pattern_explanation"] = pattern.get("explanation")
+        enriched.append(result)
+    return enriched, payload
+
+
 def get_agent_dashboard(user_id: UUID, course_id: UUID):
     # Analytics are used by the simple reflex and utility agents.
     stats = repo.get_topic_stats(user_id, course_id)
+    stats = _attach_performance_readiness(user_id, course_id, stats)
 
     # Stored memory is read separately from topic_progress.
     progress_memory = repo.get_topic_progress_memory(
         user_id,
         course_id,
+    )
+    progress_memory = _attach_performance_readiness(
+        user_id, course_id, progress_memory
+    )
+    progress_memory, patterns_payload = _attach_learning_patterns(
+        user_id, course_id, progress_memory
     )
 
     failed_documents = repo.get_failed_documents(
@@ -55,6 +109,7 @@ def get_agent_dashboard(user_id: UUID, course_id: UUID):
             ]
         ),
         "model_memory_source": "topic_progress",
+        "learning_patterns": patterns_payload,
     }
 
 
@@ -146,6 +201,7 @@ def generate_study_plan(user_id: UUID, course_id: UUID):
     # -------------------------------------------------
 
     stats = repo.get_topic_stats(user_id, course_id)
+    stats = _attach_performance_readiness(user_id, course_id, stats)
 
     topics = repo.get_topics(user_id, course_id)
 

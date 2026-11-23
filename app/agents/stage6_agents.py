@@ -74,6 +74,38 @@ def model_based_reflex_agent(topic_progress):
 
         days = (today - last_date).days
 
+        readiness = topic.get("readiness")
+        trend = topic.get("trend")
+        learning_pattern = topic.get("learning_pattern")
+        if learning_pattern == "weak_and_not_improving":
+            reminders.append({
+                "topic_id": topic["topic_id"],
+                "topic_title": topic["topic_title"],
+                "message": "This topic is consistently weak and is not showing improvement. Review it and practise targeted questions.",
+                "reason": "consistently_weak_learning_pattern",
+                "learning_pattern": learning_pattern,
+                "explanation": topic.get("learning_pattern_explanation"),
+                "attempts": attempts,
+            })
+        if readiness is not None and float(readiness) < 0.5:
+            reminders.append({
+                "topic_id": topic["topic_id"],
+                "topic_title": topic["topic_title"],
+                "message": "Your predicted readiness for this topic is low. Revise it soon.",
+                "reason": "low_predicted_readiness",
+                "readiness": round(float(readiness), 4),
+                "trend": trend,
+            })
+        elif trend == "declining":
+            reminders.append({
+                "topic_id": topic["topic_id"],
+                "topic_title": topic["topic_title"],
+                "message": "Your recent performance on this topic is declining.",
+                "reason": "declining_performance",
+                "readiness": readiness,
+                "trend": trend,
+            })
+
         if days >= 7:
             reminders.append({
                 "topic_id": topic["topic_id"],
@@ -99,11 +131,15 @@ def calculate_utility(topic):
     If frequency data is unavailable, the remaining weights
     are normalized.
     """
+    readiness = topic.get("readiness")
     accuracy = topic.get("accuracy_percentage")
 
-    weakness = 1.0 if accuracy is None else (
-        1.0 - max(0.0, min(100.0, float(accuracy))) / 100.0
-    )
+    if readiness is not None:
+        weakness = 1.0 - max(0.0, min(1.0, float(readiness)))
+    else:
+        weakness = 1.0 if accuracy is None else (
+            1.0 - max(0.0, min(100.0, float(accuracy))) / 100.0
+        )
 
     frequency = float(
         topic.get("paper_frequency_percentage") or 0
@@ -289,7 +325,14 @@ def utility_based_agent(topic_stats):
     best = candidates[0]
     reasons = []
 
-    if best.get("accuracy_percentage") is None:
+    if best.get("readiness") is not None:
+        if float(best["readiness"]) < 0.5:
+            reasons.append("The performance model predicts low readiness for this topic.")
+        elif best.get("trend") == "declining":
+            reasons.append("Your recent performance on this topic is declining.")
+        elif float(best["readiness"]) < 0.8:
+            reasons.append("Your predicted readiness can be improved.")
+    elif best.get("accuracy_percentage") is None:
         reasons.append("This topic has not been practised yet.")
     elif float(best["accuracy_percentage"]) < 50:
         reasons.append("Your accuracy is below 50%.")

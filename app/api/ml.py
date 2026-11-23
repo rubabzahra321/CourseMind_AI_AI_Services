@@ -1,11 +1,11 @@
-from typing import Literal, Optional
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.security import require_internal_key
-from app.services import difficulty_service, ml_service, performance_service
+from app.services import difficulty_service, ml_service
 
 
 router = APIRouter(
@@ -120,29 +120,52 @@ def predict_difficulty(course_id: UUID, body: DifficultyPredictBody):
 
 # ---------------------------------------------------------------- performance
 class PerformanceTrainBody(BaseModel):
-    # Activate the new version even if it scores lower than the current one.
+    # Global model: training is restricted to the trusted backend/admin route.
     force: bool = False
 
 
 @router.post("/ml/performance/train")
 def train_performance(body: PerformanceTrainBody):
-    # Trains ONE global model from every student's pooled, anonymised answers.
+    from app.services import performance_service
     try:
         return performance_service.train_performance_model(force=body.force)
-    except ml_service.InsufficientTrainingData as exc:
+    except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/ml/performance/status")
 def performance_status():
+    from app.services import performance_service
     return performance_service.get_status()
 
 
-@router.get("/courses/{course_id}/ml/readiness")
-def readiness(
-    course_id: UUID,
-    user_id: UUID,
-    difficulty: Literal["easy", "medium", "hard"] = "medium",
-):
-    return performance_service.student_readiness(
-        user_id, course_id, difficulty)
+@router.get("/courses/{course_id}/ml/performance/readiness")
+def performance_readiness(course_id: UUID, user_id: UUID):
+    from app.services import performance_service
+    return performance_service.get_topic_readiness(user_id, course_id)
+
+
+# ---------------------------------------------------------------- learning patterns
+class PatternTrainBody(BaseModel):
+    force: bool = False
+
+
+@router.post("/ml/patterns/train")
+def train_learning_patterns(body: PatternTrainBody):
+    from app.services import pattern_analysis_service
+    try:
+        return pattern_analysis_service.train_patterns(force=body.force)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/ml/patterns/status")
+def learning_patterns_status():
+    from app.services import pattern_analysis_service
+    return pattern_analysis_service.get_status()
+
+
+@router.get("/courses/{course_id}/ml/learning-patterns")
+def learning_patterns(course_id: UUID, user_id: UUID):
+    from app.services import pattern_analysis_service
+    return pattern_analysis_service.get_learning_patterns(user_id, course_id)
