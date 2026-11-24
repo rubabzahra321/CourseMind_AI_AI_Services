@@ -139,10 +139,20 @@ def performance_status():
     return performance_service.get_status()
 
 
+@router.get("/courses/{course_id}/ml/readiness")
 @router.get("/courses/{course_id}/ml/performance/readiness")
-def performance_readiness(course_id: UUID, user_id: UUID):
+def performance_readiness(
+    course_id: UUID,
+    user_id: UUID,
+    difficulty: str = "medium",
+):
     from app.services import performance_service
-    return performance_service.get_topic_readiness(user_id, course_id)
+    try:
+        return performance_service.get_topic_readiness(
+            user_id, course_id, difficulty=difficulty
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------- learning patterns

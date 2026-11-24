@@ -20,6 +20,7 @@ Candidates (compared on a time-based split, earlier = train, later = test):
 """
 
 import math
+from datetime import datetime, timezone
 
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin
@@ -152,6 +153,72 @@ def feature_matrix(rows):
         [[row[name] for name in FEATURE_NAMES] for row in rows],
         dtype=float,
     ).reshape(-1, len(FEATURE_NAMES))
+
+
+def extract_features(history, now):
+    """
+    Extract base performance summary metrics for a student's topic history.
+
+    history: list of attempt dicts, which may use:
+             - (answered_at, is_correct, response_time_seconds) or
+             - (t, correct, rt)
+    now:     current time as ISO string, datetime, or epoch seconds timestamp.
+    """
+    if not history:
+        return {
+            "overall_accuracy": 0.0,
+            "trend_slope": 0.0,
+            "average_response_time": 0.0,
+            "attempt_count": 0,
+            "days_since_practice": 0.0,
+        }
+
+    def _parse_time(val):
+        if isinstance(val, (int, float)):
+            return float(val)
+        if hasattr(val, "timestamp"):
+            return val.timestamp()
+        dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+
+    now_t = _parse_time(now)
+
+    def _item_time(item):
+        if "t" in item:
+            return _parse_time(item["t"])
+        return _parse_time(item.get("answered_at", now_t))
+
+    ordered = sorted(history, key=_item_time)
+
+    corrects = []
+    response_times = []
+    for item in ordered:
+        if "is_correct" in item:
+            c = 1 if item["is_correct"] else 0
+        elif "correct" in item:
+            c = 1 if item["correct"] else 0
+        else:
+            c = 0
+        corrects.append(c)
+
+        rt = item.get("response_time_seconds")
+        if rt is None:
+            rt = item.get("rt")
+        if rt is not None:
+            response_times.append(float(rt))
+
+    last_t = _item_time(ordered[-1])
+    days = max(0.0, (now_t - last_t) / SECONDS_PER_DAY)
+
+    return {
+        "overall_accuracy": float(sum(corrects) / len(corrects)) if corrects else 0.0,
+        "trend_slope": _slope(corrects),
+        "average_response_time": float(np.mean(response_times)) if response_times else 0.0,
+        "attempt_count": len(ordered),
+        "days_since_practice": days,
+    }
 
 
 def build_samples(histories, min_history=2, alpha=0.3):

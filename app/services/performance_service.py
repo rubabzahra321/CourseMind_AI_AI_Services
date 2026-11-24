@@ -52,9 +52,16 @@ def _attempt(row, difficulty):
     return {
         "t": _to_seconds(row["answered_at"]),
         "correct": 1 if row["is_correct"] else 0,
+        "is_correct": bool(row["is_correct"]),
+        "question_id": str(row.get("question_id") or row.get("past_paper_question_id") or ""),
         "rt": row.get("response_time_seconds"),
         "difficulty": pm.DIFFICULTY_INDEX.get(difficulty, 1),
     }
+
+
+def _source_data(user_id=None, course_id=None):
+    grouped, _ = _load_histories(user_id=user_id, course_id=course_id)
+    return grouped
 
 
 def _load_histories(user_id=None, course_id=None):
@@ -191,6 +198,8 @@ def load_pooled_histories():
 
 
 def _training_arrays(histories):
+    if hasattr(histories, "values"):
+        histories = list(histories.values())
     rows, labels, timestamps = pm.build_samples(
         histories,
         settings.ml_performance_min_history,
@@ -223,9 +232,8 @@ def _data_problem(counts, samples, labels, timestamps):
         or len(set(labels[test_indices])) < 2
     ):
         return (
-            "The earlier training period or later test period contains only "
-            "correct answers or only incorrect answers. Both outcomes are "
-            "needed for training and evaluation."
+            "the earlier or the later period contains only correct (or only "
+            "wrong) answers, so there is nothing to learn or test."
         )
 
     return None
@@ -248,7 +256,7 @@ def _card(row, activated=None, reason=None):
     card = {
         "id": row["id"],
         "model_type": row["model_type"],
-        "scope": "global_anonymised",
+        "scope": "global",
         "algorithm": row["algorithm"],
         "algorithm_label": pm.LABELS.get(
             row["algorithm"], row["algorithm"]
@@ -315,10 +323,9 @@ def train_performance_model(force=False):
         "personal_fields_in_features": False,
     }
     metrics["privacy_note"] = (
-        "Training uses pooled numeric practice-history features and answer "
-        "outcomes. Student and question identifiers are used only for "
-        "in-memory grouping; names, identifiers and question text are not "
-        "included in the model features or model bundle."
+        "Trained on answers pooled from several students. Only numbers "
+        "(accuracy, timing, difficulty) are used; the stored model contains "
+        "no names, ids or question text."
     )
 
     bundle = {
@@ -362,7 +369,7 @@ def get_status():
 
     return {
         "model_type": MODEL_TYPE,
-        "scope": "global_anonymised",
+        "scope": "global",
         "active_model": _card(active) if active else None,
         "using_fallback": active is None,
         "history": [

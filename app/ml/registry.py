@@ -139,3 +139,17 @@ def load_active_bundle(user_id, course_id, model_type):
     except Exception:
         # File missing or unreadable: behave as "no model" instead of failing.
         return row, None
+
+
+def save_global_version(model_type, algorithm, n_samples, metrics, comparison, bundle):
+    return save_version(
+        None, None, model_type, algorithm, n_samples, metrics, comparison, bundle
+    )
+
+
+def activate_global_if_better(row, force=False):
+    return activate_if_better(row, force=force)
+
+
+def load_global_active_bundle(model_type):
+    return load_active_bundle(None, None, model_type)

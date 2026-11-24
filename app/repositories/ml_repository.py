@@ -81,3 +81,11 @@ def activate(model_id, user_id, course_id, model_type):
         .execute()
         .data
     )
+
+
+def get_global_active(model_type):
+    return get_active(None, None, model_type)
+
+
+def list_global_models(model_type):
+    return list_models(None, None, model_type)
